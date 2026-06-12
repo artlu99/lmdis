@@ -1,0 +1,17 @@
+# dependencies (bun install)
+node_modules
+bun.lock
+
+# data
+data/
+
+# dotenv environment variable files
+.env
+.env.local
+
+# caches
+*.tsbuildinfo
+
+# personalized agentic instructions
+CLAUDE.md
+AGENTS.md

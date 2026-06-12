@@ -1,0 +1,101 @@
+import { createDocument } from "zod-openapi";
+import { z } from "zod";
+
+const noNullByte = (s: string) => !s.includes("\x00");
+const userKey = z.string().min(1).refine(noNullByte, "must not contain null bytes");
+const userField = userKey;
+const userMember = userKey;
+const incrAmount = z.string().refine((s) => Number.isFinite(Number(s)), "amount must be a valid number");
+
+export const SetReq = z.tuple([z.literal("SET"), userKey, z.string()]);
+export const GetReq = z.tuple([z.literal("GET"), userKey]);
+export const DelReq = z.tuple([z.literal("DEL"), userKey]);
+export const HincrReq = z.tuple([z.literal("HINCR"), userKey, userField, incrAmount]);
+export const SaddReq = z.tuple([z.literal("SADD"), userKey, userMember]);
+export const SmembReq = z.tuple([z.literal("SMEMB"), userKey]);
+export const SdelReq = z.tuple([z.literal("SDEL"), userKey, userMember]);
+export const CommandReq = z.union([SetReq, GetReq, DelReq, HincrReq, SaddReq, SmembReq, SdelReq]);
+
+export const SetRes = z.object({ result: z.literal("OK") });
+export const GetRes = z.object({ result: z.string().nullable() });
+export const IntFlagRes = z.object({ result: z.union([z.literal(0), z.literal(1)]) });
+export const HincrRes = z.object({ result: z.number() });
+export const SmembRes = z.object({ result: z.array(z.string()) });
+const UnauthorizedRes = z.object({
+  error: z.string(),
+  code: z.literal("UNAUTHORIZED"),
+});
+
+const oasResponse = (schema: z.ZodTypeAny) => ({
+  "200": {
+    description: "OK",
+    content: { "application/json": { schema } },
+  },
+});
+
+const protectedResponses = (schema: z.ZodTypeAny) => ({
+  ...oasResponse(schema),
+  "401": {
+    description: "Unauthorized",
+    content: { "application/json": { schema: UnauthorizedRes } },
+  },
+});
+
+const bearerSecurity = [{ bearerAuth: [] }];
+
+export const spec = createDocument({
+  openapi: "3.1.0",
+  info: { title: "lmdis", version: "1.0.0" },
+  components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: "http",
+        scheme: "bearer",
+      },
+    },
+  },
+  paths: {
+    "/": {
+      summary: "Execute command",
+      post: {
+        security: bearerSecurity,
+        requestBody: {
+          content: { "application/json": { schema: CommandReq } },
+        },
+        responses: protectedResponses(z.union([SetRes, GetRes, IntFlagRes, HincrRes, SmembRes])),
+      },
+    },
+    "/openapi.json": {
+      get: {
+        security: bearerSecurity,
+        summary: "OpenAPI spec",
+        responses: protectedResponses(z.any()),
+      },
+    },
+    "/docs": {
+      get: {
+        security: bearerSecurity,
+        summary: "API documentation",
+        responses: protectedResponses(z.any()),
+      },
+    },
+    "/health": {
+      get: {
+        summary: "Health check",
+        responses: oasResponse(z.object({ status: z.literal("ok") })),
+      },
+    },
+    "/uptime": {
+      get: {
+        security: bearerSecurity,
+        summary: "Server uptime",
+        responses: protectedResponses(z.object({ uptimeSeconds: z.number() })),
+      },
+    },
+  },
+});
+
+export const docsHtml = `<!DOCTYPE html>
+<html><head><title>lmdis docs</title></head>
+<body><script id="api-reference" data-url="/openapi.json" data-configuration='{"showDeveloperTools":"never"}'></script>
+<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script></body></html>`;
