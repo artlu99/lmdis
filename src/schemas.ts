@@ -67,16 +67,14 @@ export const spec = createDocument({
     },
     "/openapi.json": {
       get: {
-        security: bearerSecurity,
         summary: "OpenAPI spec",
-        responses: protectedResponses(z.any()),
+        responses: oasResponse(z.any()),
       },
     },
     "/docs": {
       get: {
-        security: bearerSecurity,
         summary: "API documentation",
-        responses: protectedResponses(z.any()),
+        responses: oasResponse(z.any()),
       },
     },
     "/health": {

@@ -70,7 +70,7 @@ describe("OpenAPI spec", () => {
   let spec: Record<string, unknown>;
 
   beforeAll(async () => {
-    const res = await fetch(`${base}/openapi.json`, { headers: authHeaders });
+    const res = await fetch(`${base}/openapi.json`);
     spec = (await res.json()) as Record<string, unknown>;
   });
 

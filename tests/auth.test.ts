@@ -51,3 +51,16 @@ test("GET /uptime without token returns 401", async () => {
   const res = await fetch(`${base}/uptime`);
   expect(res.status).toBe(401);
 });
+
+test("GET /docs without token returns 200", async () => {
+  const res = await fetch(`${base}/docs`);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("text/html");
+});
+
+test("GET /openapi.json without token returns 200", async () => {
+  const res = await fetch(`${base}/openapi.json`);
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as { openapi: string };
+  expect(body.openapi).toBe("3.1.0");
+});

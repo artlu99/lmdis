@@ -47,7 +47,7 @@ export const createRoutes = (store: Store, auth: AuthConfig, config: RouteConfig
 
   return {
     "/": {
-      GET: wrap(() => new Response(null, { status: 302, headers: { Location: "/docs" } }), true),
+      GET: wrap(() => new Response(null, { status: 302, headers: { Location: "/docs" } }), false),
       POST: wrap(handleCommand(store), true),
     },
     "/health": wrap(() => Response.json({ status: "ok" }), false),
@@ -55,10 +55,10 @@ export const createRoutes = (store: Store, auth: AuthConfig, config: RouteConfig
       () => Response.json({ uptimeSeconds: Math.floor((Date.now() - start) / 1000) }),
       true,
     ),
-    "/openapi.json": wrap(() => Response.json(spec), true),
+    "/openapi.json": wrap(() => Response.json(spec), false),
     "/docs": wrap(
       () => new Response(docsHtml, { headers: { "Content-Type": "text/html" } }),
-      true,
+      false,
     ),
   };
 };

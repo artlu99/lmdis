@@ -7,13 +7,13 @@
 
 ## Authentication
 
-Every request must include a bearer token **except** `GET /health`.
+Every request must include a bearer token **except** `GET /health`, `GET /docs`, `GET /openapi.json`, and `GET /` (redirect to docs).
 
 | | |
 |---|---|
 | **Header** | `Authorization: Bearer <token>` |
 | **Env var** | `LMDIS_REST_TOKEN` (required — server refuses to start without it) |
-| **Public probe** | `GET /health` — no auth, for load balancers and monitoring |
+| **Public routes** | `GET /health` (probes), `GET /docs`, `GET /openapi.json`, `GET /` — no auth |
 
 Generate a token:
 

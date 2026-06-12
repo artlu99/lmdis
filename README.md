@@ -27,7 +27,7 @@ curl -X POST localhost:3000 \
   -d '["GET", "hello"]'
 ```
 
-Interactive API docs at [localhost:3000/docs](http://localhost:3000/docs) (requires bearer token).
+Interactive API docs at [localhost:3000/docs](http://localhost:3000/docs) (no auth required).
 
 ## SDK
 
@@ -65,9 +65,9 @@ lmdis uses a single bearer token, similar to [Upstash Redis REST API](https://up
 | **Missing/invalid token** | `401` with `{"error":"...","code":"UNAUTHORIZED"}` |
 
 
-**Protected routes** — all data commands, plus `/uptime`, `/docs`, `/openapi.json`, and the `/` redirect.
+**Protected routes** — all data commands (`POST /`) and `GET /uptime`.
 
-**Public route** — `GET /health` only (for load balancer probes; no token needed).
+**Public routes** — `GET /health` (load balancer probes), `GET /docs`, `GET /openapi.json`, and `GET /` (redirects to `/docs`).
 
 Generate a token:
 
@@ -126,8 +126,8 @@ Atomically increments a hash field by the given amount.
 | ------------------- | ------ | ----------------------- |
 | `GET /health`       | none   | `{"status":"ok"}`       |
 | `GET /uptime`       | bearer | `{"uptimeSeconds":123}` |
-| `GET /openapi.json` | bearer | OpenAPI 3.1 spec        |
-| `GET /docs`         | bearer | Interactive API docs    |
+| `GET /openapi.json` | none   | OpenAPI 3.1 spec        |
+| `GET /docs`         | none   | Interactive API docs    |
 
 
 Health check (no auth):
