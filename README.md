@@ -97,6 +97,18 @@ All examples below require `-H "Authorization: Bearer $LMDIS_REST_TOKEN"` unless
 | `GET`   | `["GET", "key"]`          | `{"result":"value"}` or `{"result":null}` |
 | `DEL`   | `["DEL", "key"]`          | `{"result":1}` or `{"result":0}`          |
 
+Optional TTL on `SET` (same as [Upstash Redis REST](https://upstash.com/docs/redis/features/restapi)):
+
+| Option | POST body example | Meaning |
+| ------ | ----------------- | ------- |
+| `EX` | `["SET", "key", "value", "EX", 60]` | Expire in 60 seconds |
+| `PX` | `["SET", "key", "value", "PX", 5000]` | Expire in 5000 ms |
+| `EXAT` | `["SET", "key", "value", "EXAT", 1718123456]` | Expire at Unix time (seconds) |
+| `PXAT` | `["SET", "key", "value", "PXAT", 1718123456789]` | Expire at Unix time (ms) |
+| `KEEPTTL` | `["SET", "key", "value", "KEEPTTL"]` | Update value, keep existing TTL |
+
+A plain `SET` without TTL clears any previous expiration on that key. Expired keys return `null` on `GET` (lazy deletion).
+
 `DEL` removes the string value (if any) and all hash fields and set members stored under that key.
 
 ### Hashes
@@ -138,7 +150,6 @@ curl localhost:3000/health
 
 ## Limitations
 
-- No key expiration (TTL) — all data lives forever unless explicitly deleted
 - No transactions or batch operations (MULTI/EXEC)
 - Single bearer token for authentication — no multi-user or RBAC support
 - No keyspace enumeration (KEYS command removed due to O(n) full-table scan)

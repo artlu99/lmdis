@@ -48,15 +48,30 @@ const deserialize = <T>(value: string | null): T | null => {
 
 const unsupportedSetOptions = (opts?: SetCommandOptions): string | null => {
   if (!opts) return null;
-  if (opts.ex !== undefined) return "ex";
-  if (opts.px !== undefined) return "px";
-  if (opts.exat !== undefined) return "exat";
-  if (opts.pxat !== undefined) return "pxat";
-  if (opts.keepTtl) return "keepTtl";
   if (opts.get) return "get";
   if (opts.nx) return "nx";
   if (opts.xx) return "xx";
   return null;
+};
+
+const buildSetBody = (key: string, value: string, opts?: SetCommandOptions): unknown[] => {
+  const body: unknown[] = ["SET", key, value];
+  const ttlOpts = [
+    opts?.ex !== undefined ? "ex" : null,
+    opts?.px !== undefined ? "px" : null,
+    opts?.exat !== undefined ? "exat" : null,
+    opts?.pxat !== undefined ? "pxat" : null,
+    opts?.keepTtl ? "keepTtl" : null,
+  ].filter(Boolean);
+  if (ttlOpts.length > 1) {
+    throw new LmdisError("SET TTL options are mutually exclusive");
+  }
+  if (opts?.ex !== undefined) body.push("EX", opts.ex);
+  else if (opts?.px !== undefined) body.push("PX", opts.px);
+  else if (opts?.exat !== undefined) body.push("EXAT", opts.exat);
+  else if (opts?.pxat !== undefined) body.push("PXAT", opts.pxat);
+  else if (opts?.keepTtl) body.push("KEEPTTL");
+  return body;
 };
 
 export class LmdisClient {
@@ -94,7 +109,7 @@ export class LmdisClient {
     if (unsupported) {
       throw new LmdisError(`SET option "${unsupported}" is not supported by lmdis`);
     }
-    await this.request<"OK">(["SET", key, serialize(value)]);
+    await this.request<"OK">(buildSetBody(key, serialize(value), opts));
     return "OK";
   }
 

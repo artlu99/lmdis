@@ -47,8 +47,8 @@ test("sadd, smembers, and srem", async () => {
   expect(await client.smembers("tags")).toEqual(["py"]);
 });
 
-test("set rejects unsupported options", async () => {
-  await expect(client.set("k", "v", { ex: 60 })).rejects.toThrow(LmdisError);
+test("set rejects unsupported conditional options", async () => {
+  await expect(client.set("k", "v", { nx: true })).rejects.toThrow(LmdisError);
 });
 
 test("throws on unauthorized requests", async () => {

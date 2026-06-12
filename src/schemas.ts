@@ -7,7 +7,24 @@ const userField = userKey;
 const userMember = userKey;
 const incrAmount = z.string().refine((s) => Number.isFinite(Number(s)), "amount must be a valid number");
 
-export const SetReq = z.tuple([z.literal("SET"), userKey, z.string()]);
+const ttlDuration = z
+  .union([z.number(), z.string()])
+  .transform((v) => (typeof v === "number" ? v : Number(v)))
+  .pipe(z.number().int().positive());
+
+const ttlTimestamp = z
+  .union([z.number(), z.string()])
+  .transform((v) => (typeof v === "number" ? v : Number(v)))
+  .pipe(z.number().int().positive());
+
+export const SetReq = z.union([
+  z.tuple([z.literal("SET"), userKey, z.string()]),
+  z.tuple([z.literal("SET"), userKey, z.string(), z.literal("EX"), ttlDuration]),
+  z.tuple([z.literal("SET"), userKey, z.string(), z.literal("PX"), ttlDuration]),
+  z.tuple([z.literal("SET"), userKey, z.string(), z.literal("EXAT"), ttlTimestamp]),
+  z.tuple([z.literal("SET"), userKey, z.string(), z.literal("PXAT"), ttlTimestamp]),
+  z.tuple([z.literal("SET"), userKey, z.string(), z.literal("KEEPTTL")]),
+]);
 export const GetReq = z.tuple([z.literal("GET"), userKey]);
 export const DelReq = z.tuple([z.literal("DEL"), userKey]);
 export const HincrReq = z.tuple([z.literal("HINCR"), userKey, userField, incrAmount]);

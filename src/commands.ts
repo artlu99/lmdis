@@ -1,20 +1,64 @@
 import { CommandReq } from "./schemas";
-import { hKey, hPrefix, mKey, mPrefix, removeIfExists, type Store } from "./store";
+import {
+  eKey,
+  expirePlainKeyIfNeeded,
+  expiresAtMs,
+  hKey,
+  hPrefix,
+  mKey,
+  mPrefix,
+  removeExpiryIfExists,
+  removeIfExists,
+  type SetTtl,
+  type Store,
+} from "./store";
 
-export const cmdSet = (store: Store) => async (key: string, value: string) => {
-  await store.transaction(async () => {
-    await store.put(key, value);
-  });
-  return Response.json({ result: "OK" });
+const parseSetTtl = (args: unknown[]): SetTtl | undefined => {
+  if (args.length === 3) return undefined;
+  if (args.length === 4 && args[3] === "KEEPTTL") return { kind: "keepttl" };
+  if (args.length === 5) {
+    const opt = args[3];
+    const amount = args[4] as number;
+    switch (opt) {
+      case "EX":
+        return { kind: "ex", seconds: amount };
+      case "PX":
+        return { kind: "px", ms: amount };
+      case "EXAT":
+        return { kind: "exat", atSeconds: amount };
+      case "PXAT":
+        return { kind: "pxat", atMs: amount };
+    }
+  }
+  return undefined;
 };
 
-export const cmdGet = (store: Store) => (key: string) =>
-  Response.json({ result: store.get(key) ?? null });
+export const cmdSet =
+  (store: Store) => async (key: string, value: string, ttl?: SetTtl) => {
+    await expirePlainKeyIfNeeded(store)(key);
+    await store.transaction(async () => {
+      await store.put(key, value);
+      if (ttl === undefined) {
+        await removeExpiryIfExists(store)(key);
+        return;
+      }
+      const expiry = expiresAtMs(ttl);
+      if (expiry === "keep") return;
+      await store.put(eKey(key), String(expiry));
+    });
+    return Response.json({ result: "OK" });
+  };
+
+export const cmdGet = (store: Store) => async (key: string) => {
+  await expirePlainKeyIfNeeded(store)(key);
+  return Response.json({ result: store.get(key) ?? null });
+};
 
 export const cmdDel = (store: Store) => async (key: string) => {
   let removed = 0;
   await store.transaction(async () => {
     if (await removeIfExists(store)(key)) removed = 1;
+    if (await removeIfExists(store)(eKey(key))) removed = 1;
     const hPre = hPrefix(key);
     for (const { key: k } of store.getRange({ start: hPre, end: hPre + "\xff" })) {
       await store.remove(k);
@@ -94,9 +138,9 @@ export const handleCommand = (store: Store) => async (req: Request): Promise<Res
   try {
     switch (cmd) {
       case "SET":
-        return await cmdSet(store)(args[0]!, args[1]!);
+        return await cmdSet(store)(args[0]!, args[1]!, parseSetTtl(parsed.data as unknown[]));
       case "GET":
-        return cmdGet(store)(args[0]!);
+        return await cmdGet(store)(args[0]!);
       case "DEL":
         return await cmdDel(store)(args[0]!);
       case "HINCR":
