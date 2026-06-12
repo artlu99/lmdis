@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createStore } from "./index";
-import { resetStore } from "./store";
+import { createStore } from "../src/index";
+import { resetStore } from "../src/store";
 import { authHeaders, startTestServer } from "./test-helpers";
 
 const store = createStore("data/test-auth");

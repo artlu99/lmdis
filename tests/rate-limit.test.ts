@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createRateLimiter } from "./rate-limit";
+import { createRateLimiter } from "../src/rate-limit";
 
 const req = (ip?: string) =>
   new Request("http://localhost/", {

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { createStore } from "./index";
-import { LmdisClient, LmdisError } from "./sdk";
-import { resetStore } from "./store";
+import { createStore } from "../src/index";
+import { LmdisClient, LmdisError } from "../src/sdk";
+import { resetStore } from "../src/store";
 import { startTestServer } from "./test-helpers";
 
 const store = createStore("data/test-sdk");

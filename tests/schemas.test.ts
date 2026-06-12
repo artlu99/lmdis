@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createStore } from "./index";
+import { createStore } from "../src/index";
 import { authHeaders, startTestServer } from "./test-helpers";
 
 const store = createStore("data/test-schemas");

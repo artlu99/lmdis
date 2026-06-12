@@ -54,7 +54,7 @@ bun install --production
 export LMDIS_REST_TOKEN=$(openssl rand -hex 32)
 echo "LMDIS_REST_TOKEN=$LMDIS_REST_TOKEN" >> .env
 
-bun run index.ts
+bun run src/index.ts
 ```
 
 No build step required — Bun runs TypeScript directly.
@@ -73,7 +73,7 @@ curl -H "Authorization: Bearer $LMDIS_REST_TOKEN" \
 Compile a single self-contained binary with no runtime dependency:
 
 ```bash
-bun build --compile index.ts --outfile lmdis
+bun build --compile src/index.ts --outfile lmdis
 
 export LMDIS_REST_TOKEN=$(openssl rand -hex 32)
 ./lmdis
@@ -105,7 +105,7 @@ Type=simple
 User=lmdis
 WorkingDirectory=/opt/lmdis
 EnvironmentFile=/opt/lmdis/.env
-ExecStart=/usr/local/bin/bun run index.ts
+ExecStart=/usr/local/bin/bun run src/index.ts
 Restart=on-failure
 RestartSec=5
 
@@ -138,11 +138,11 @@ FROM oven/bun:1
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --production
-COPY *.ts ./
+COPY src/ ./src/
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
-CMD ["bun", "run", "index.ts"]
+CMD ["bun", "run", "src/index.ts"]
 ```
 
 Run with the token passed as a secret (not baked into the image):

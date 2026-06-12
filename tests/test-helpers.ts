@@ -1,7 +1,7 @@
-import type { AuthConfig } from "./auth";
-import type { RouteConfig } from "./index";
-import { createRoutes } from "./index";
-import type { Store } from "./store";
+import type { AuthConfig } from "../src/auth";
+import type { RouteConfig } from "../src/index";
+import { createRoutes } from "../src/index";
+import type { Store } from "../src/store";
 
 export const TEST_TOKEN = "test-token";
 export const testAuth: AuthConfig = { token: TEST_TOKEN };

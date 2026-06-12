@@ -29,6 +29,34 @@ curl -X POST localhost:3000 \
 
 Interactive API docs at [localhost:3000/docs](http://localhost:3000/docs) (requires bearer token).
 
+## SDK
+
+Install the HTTP client (Upstash Redis–compatible API, zero runtime dependencies):
+
+```bash
+bun add lmdis
+```
+
+```ts
+import { LmdisClient } from "lmdis";
+
+const redis = new LmdisClient({
+  url: "http://localhost:3000",
+  token: process.env.LMDIS_REST_TOKEN!,
+});
+
+await redis.set("hello", "world");
+const value = await redis.get<string>("hello");
+```
+
+The npm package ships `LmdisClient` only. Clone this repo to self-host the LMDB server.
+
+Runnable example (server must be up with `LMDIS_REST_TOKEN` in `.env`):
+
+```bash
+bun examples/client.ts
+```
+
 ## Authentication
 
 lmdis uses a single bearer token, similar to [Upstash Redis REST API](https://upstash.com/docs/redis/features/restapi) auth.
@@ -175,7 +203,7 @@ See [DEPLOY.md](./DEPLOY.md) for production setup, Docker, systemd, and security
 ```bash
 bun install
 bun run dev      # --watch mode (set LMDIS_REST_TOKEN in .env first)
-bun test         # run all tests (random ports via port 0)
+bun test         # run tests/ (random ports via port 0)
 bunx tsc --noEmit # typecheck
 ```
 
