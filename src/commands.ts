@@ -1,14 +1,18 @@
 import { CommandReq } from "./schemas";
+import { cmdKeys, cmdScanKeys } from "./keys";
 import {
   eKey,
   expirePlainKeyIfNeeded,
   expiresAtMs,
   hKey,
   hPrefix,
+  iKey,
   mKey,
   mPrefix,
   removeExpiryIfExists,
   removeIfExists,
+  syncIndex,
+  touchIndex,
   type SetTtl,
   type Store,
 } from "./store";
@@ -38,6 +42,7 @@ export const cmdSet =
     await expirePlainKeyIfNeeded(store)(key);
     await store.transaction(async () => {
       await store.put(key, value);
+      await touchIndex(store)(key);
       if (ttl === undefined) {
         await removeExpiryIfExists(store)(key);
         return;
@@ -69,6 +74,7 @@ export const cmdDel = (store: Store) => async (key: string) => {
       await store.remove(k);
       removed = 1;
     }
+    if (await removeIfExists(store)(iKey(key))) removed = 1;
   });
   return Response.json({ result: removed });
 };
@@ -82,6 +88,7 @@ export const cmdHincr = (store: Store) => async (key: string, field: string, amo
   await store.transaction(async () => {
     next = Number(store.get(k) ?? 0) + Number(amount);
     await store.put(k, String(next));
+    await touchIndex(store)(key);
   });
   return Response.json({ result: next });
 };
@@ -95,6 +102,7 @@ export const cmdSadd = (store: Store) => async (key: string, member: string) => 
       await store.put(k, "");
       added = 1;
     }
+    await touchIndex(store)(key);
   });
   return Response.json({ result: added });
 };
@@ -115,6 +123,7 @@ export const cmdSdel = (store: Store) => async (key: string, member: string) => 
   let removed = 0;
   await store.transaction(async () => {
     if (await removeIfExists(store)(mKey(key, member))) removed = 1;
+    await syncIndex(store)(key);
   });
   return Response.json({ result: removed });
 };
@@ -134,23 +143,29 @@ export const handleCommand = (store: Store) => async (req: Request): Promise<Res
   if (!parsed.success) {
     return Response.json({ error: parsed.error.message, code: "VALIDATION_ERROR" }, { status: 400 });
   }
-  const [cmd, ...args] = parsed.data;
+  const data = parsed.data;
   try {
-    switch (cmd) {
+    switch (data[0]) {
       case "SET":
-        return await cmdSet(store)(args[0]!, args[1]!, parseSetTtl(parsed.data as unknown[]));
+        return await cmdSet(store)(data[1], data[2], parseSetTtl(data as unknown[]));
       case "GET":
-        return await cmdGet(store)(args[0]!);
+        return await cmdGet(store)(data[1]);
       case "DEL":
-        return await cmdDel(store)(args[0]!);
+        return await cmdDel(store)(data[1]);
       case "HINCR":
-        return await cmdHincr(store)(args[0]!, args[1]!, args[2]!);
+        return await cmdHincr(store)(data[1], data[2], data[3]);
       case "SADD":
-        return await cmdSadd(store)(args[0]!, args[1]!);
+        return await cmdSadd(store)(data[1], data[2]);
       case "SMEMB":
-        return cmdSmemb(store)(args[0]!);
+        return cmdSmemb(store)(data[1]);
       case "SDEL":
-        return await cmdSdel(store)(args[0]!, args[1]!);
+        return await cmdSdel(store)(data[1], data[2]);
+      case "KEYS":
+        return cmdKeys(store)(data.length === 2 ? data[1] : undefined);
+      case "SCANKEYS": {
+        const pattern = data.length === 5 && data[3] === "MATCH" ? data[4] : undefined;
+        return cmdScanKeys(store)(data[1], data[2], pattern);
+      }
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

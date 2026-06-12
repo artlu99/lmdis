@@ -3,7 +3,7 @@ import { handleCommand } from "./commands";
 import { withAccessLog } from "./log";
 import { createRateLimiter, type RateLimitConfig } from "./rate-limit";
 import { docsHtml, spec } from "./schemas";
-import { createStore, type Store } from "./store";
+import { createStore, backfillIndexIfNeeded, type Store } from "./store";
 
 const start = Date.now();
 
@@ -74,6 +74,7 @@ if (import.meta.main) {
   const port = Number(process.env.PORT) || 3000;
   const rateLimitRpm = Number(process.env.LMDIS_RATE_LIMIT);
   const store = createStore();
+  await backfillIndexIfNeeded(store)();
   const server = Bun.serve({
     port,
     routes: createRoutes(store, { token }, {

@@ -31,13 +31,40 @@ export const HincrReq = z.tuple([z.literal("HINCR"), userKey, userField, incrAmo
 export const SaddReq = z.tuple([z.literal("SADD"), userKey, userMember]);
 export const SmembReq = z.tuple([z.literal("SMEMB"), userKey]);
 export const SdelReq = z.tuple([z.literal("SDEL"), userKey, userMember]);
-export const CommandReq = z.union([SetReq, GetReq, DelReq, HincrReq, SaddReq, SmembReq, SdelReq]);
+const globPattern = z.string().min(1);
+const scanCount = z
+  .union([z.number(), z.string()])
+  .transform((v) => (typeof v === "number" ? v : Number(v)))
+  .pipe(z.number().int().positive().max(1000));
+export const KeysReq = z.union([
+  z.tuple([z.literal("KEYS")]),
+  z.tuple([z.literal("KEYS"), globPattern]),
+]);
+export const ScanKeysReq = z.union([
+  z.tuple([z.literal("SCANKEYS"), z.string(), scanCount]),
+  z.tuple([z.literal("SCANKEYS"), z.string(), scanCount, z.literal("MATCH"), globPattern]),
+]);
+export const CommandReq = z.union([
+  SetReq,
+  GetReq,
+  DelReq,
+  HincrReq,
+  SaddReq,
+  SmembReq,
+  SdelReq,
+  KeysReq,
+  ScanKeysReq,
+]);
 
 export const SetRes = z.object({ result: z.literal("OK") });
 export const GetRes = z.object({ result: z.string().nullable() });
 export const IntFlagRes = z.object({ result: z.union([z.literal(0), z.literal(1)]) });
 export const HincrRes = z.object({ result: z.number() });
 export const SmembRes = z.object({ result: z.array(z.string()) });
+export const KeysRes = z.object({ result: z.array(userKey) });
+export const ScanKeysRes = z.object({
+  result: z.tuple([z.string(), z.array(userKey)]),
+});
 const UnauthorizedRes = z.object({
   error: z.string(),
   code: z.literal("UNAUTHORIZED"),
@@ -79,7 +106,9 @@ export const spec = createDocument({
         requestBody: {
           content: { "application/json": { schema: CommandReq } },
         },
-        responses: protectedResponses(z.union([SetRes, GetRes, IntFlagRes, HincrRes, SmembRes])),
+        responses: protectedResponses(
+          z.union([SetRes, GetRes, IntFlagRes, HincrRes, SmembRes, KeysRes, ScanKeysRes]),
+        ),
       },
     },
     "/openapi.json": {

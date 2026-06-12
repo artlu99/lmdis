@@ -149,4 +149,18 @@ export class LmdisClient {
     }
     return removed;
   }
+
+  async keys(pattern?: string): Promise<string[]> {
+    return this.request<string[]>(pattern === undefined ? ["KEYS"] : ["KEYS", pattern]);
+  }
+
+  async scanKeys(
+    cursor: string,
+    count: number,
+    pattern?: string,
+  ): Promise<[string, string[]]> {
+    const body: unknown[] = ["SCANKEYS", cursor, count];
+    if (pattern !== undefined) body.push("MATCH", pattern);
+    return this.request<[string, string[]]>(body);
+  }
 }

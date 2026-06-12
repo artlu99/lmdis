@@ -131,6 +131,18 @@ Atomically increments a hash field by the given amount.
 | `SDEL`  | `["SDEL", "key", "member"]` | `{"result":1}` or `{"result":0}` |
 
 
+### Key enumeration
+
+
+| Command    | POST body                                      | Returns                                      |
+| ---------- | ---------------------------------------------- | -------------------------------------------- |
+| `KEYS`     | `["KEYS"]` or `["KEYS", "pattern"]`            | `{"result":["key1","key2"]}`                 |
+| `SCANKEYS` | `["SCANKEYS", "0", 100]` or with `"MATCH", "pattern"` | `{"result":["<cursor>", ["key1"]]}` |
+
+
+Both commands walk a dedicated user-key index (`O(k)` over logical keys, not LMDB hash/set rows). `MATCH` uses Redis-style glob (`*`, `?`, `[class]`). Prefer `SCANKEYS` on large keyspaces — `KEYS` returns the full list in one response.
+
+
 ### Server
 
 
@@ -152,7 +164,7 @@ curl localhost:3000/health
 
 - No transactions or batch operations (MULTI/EXEC)
 - Single bearer token for authentication — no multi-user or RBAC support
-- No keyspace enumeration (KEYS command removed due to O(n) full-table scan)
+- `KEYS` is O(k) and returns all matching keys in one response — prefer `SCANKEYS` on large keyspaces
 - Request body size capped at 1MB (`413` when `Content-Length` exceeds the limit)
 - No CORS — lmdis is intended for server-to-server use. Browser clients should call your own backend, which proxies requests to lmdis using `LMDIS_REST_TOKEN` server-side.
 - `/uptime` resets on `bun run dev` (`--watch`) hot-reload — dev-mode limitation only; production processes keep accurate uptime until restart

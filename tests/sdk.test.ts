@@ -55,3 +55,13 @@ test("throws on unauthorized requests", async () => {
   const bad = new LmdisClient({ url: base, token: "wrong" });
   await expect(bad.get<string>("k")).rejects.toThrow(LmdisError);
 });
+
+test("keys and scanKeys", async () => {
+  await client.set("sdk:1", "a");
+  await client.set("sdk:2", "b");
+  expect((await client.keys("sdk:*")).sort()).toEqual(["sdk:1", "sdk:2"]);
+
+  const [cursor, page] = await client.scanKeys("0", 1, "sdk:*");
+  expect(page).toHaveLength(1);
+  expect(cursor === "0" || cursor.startsWith("sdk:")).toBe(true);
+});
