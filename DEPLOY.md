@@ -174,6 +174,10 @@ lmdis has no CORS headers and is not designed for direct browser access. Use a b
 
 See [README.md — Browser clients](./README.md#browser-clients) for a minimal proxy example.
 
+## Client SDK
+
+There is no npm package. Copy [`src/sdk.ts`](src/sdk.ts) into your backend (~130 lines, zero dependencies) or import it from a checked-out clone. See [README — SDK](./README.md#sdk).
+
 ## Reverse proxy
 
 Terminate TLS in front of lmdis (nginx, Caddy, Cloudflare, etc.). Bearer tokens must travel over HTTPS in production.

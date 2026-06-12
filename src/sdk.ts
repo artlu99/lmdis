@@ -1,4 +1,5 @@
-// HTTP client mirroring the @upstash/redis SDK surface for lmdis.
+// Copy-paste HTTP client (~130 lines). Upstash Redis–compatible API for lmdis.
+// Not published to npm — vendor this file into your project.
 
 export type LmdisClientConfig = {
   url: string;

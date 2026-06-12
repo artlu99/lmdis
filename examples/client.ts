@@ -4,6 +4,9 @@
  *   bun start   # in another terminal, with LMDIS_REST_TOKEN in .env
  *   bun examples/client.ts
  *
+ * Copy src/sdk.ts into your project, or run from a clone:
+ *   import { LmdisClient } from "../src/sdk";
+ *
  * Env: LMDIS_URL (default http://localhost:3000), LMDIS_REST_TOKEN (required)
  */
 import { LmdisClient } from "../src/sdk";

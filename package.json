@@ -1,30 +1,20 @@
 {
   "name": "lmdis",
-  "version": "1.0.0",
-  "description": "HTTP client for the lmdis key-value store",
+  "private": true,
+  "description": "Lightweight HTTP key-value store backed by LMDB",
   "type": "module",
   "license": "MIT",
-  "exports": {
-    ".": {
-      "types": "./src/sdk.ts",
-      "import": "./src/sdk.ts",
-      "default": "./src/sdk.ts"
-    }
-  },
-  "files": [
-    "src/sdk.ts",
-    "README.md",
-    "LICENSE"
-  ],
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts"
   },
-  "devDependencies": {
-    "@types/bun": "latest",
+  "dependencies": {
     "lmdb": "^3.5.5",
     "zod": "^4.4.3",
     "zod-openapi": "^5.4.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5"

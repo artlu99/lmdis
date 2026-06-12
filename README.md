@@ -31,17 +31,13 @@ Interactive API docs at [localhost:3000/docs](http://localhost:3000/docs) (requi
 
 ## SDK
 
-Install the HTTP client (Upstash Redis–compatible API, zero runtime dependencies):
-
-```bash
-bun add lmdis
-```
+Copy [`src/sdk.ts`](src/sdk.ts) into your project (~130 lines, zero runtime dependencies). It mirrors the [Upstash Redis](https://upstash.com/docs/redis/features/restapi) client API over lmdis HTTP.
 
 ```ts
-import { LmdisClient } from "lmdis";
+import { LmdisClient } from "./lmdis/sdk"; // path to your copy
 
 const redis = new LmdisClient({
-  url: "http://localhost:3000",
+  url: process.env.LMDIS_URL ?? "http://localhost:3000",
   token: process.env.LMDIS_REST_TOKEN!,
 });
 
@@ -49,7 +45,7 @@ await redis.set("hello", "world");
 const value = await redis.get<string>("hello");
 ```
 
-The npm package ships `LmdisClient` only. Clone this repo to self-host the LMDB server.
+There is no npm package — vendor the file or import it from a checked-out clone. Self-host the server from this repo (`bun start`).
 
 Runnable example (server must be up with `LMDIS_REST_TOKEN` in `.env`):
 
@@ -203,7 +199,7 @@ See [DEPLOY.md](./DEPLOY.md) for production setup, Docker, systemd, and security
 ```bash
 bun install
 bun run dev      # --watch mode (set LMDIS_REST_TOKEN in .env first)
-bun test         # run tests/ (random ports via port 0)
+bun test         # auto-discovers tests/
 bunx tsc --noEmit # typecheck
 ```
 
