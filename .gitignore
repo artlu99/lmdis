@@ -5,6 +5,9 @@ bun.lock
 # data
 data/
 
+# benchmark output (keep .gitkeep)
+benchmark/results/*.json
+
 # dotenv environment variable files
 .env
 .env.local

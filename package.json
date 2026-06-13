@@ -6,7 +6,8 @@
   "license": "MIT",
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "bun --watch src/index.ts"
+    "dev": "bun --watch src/index.ts",
+    "benchmark": "bun run benchmark/run.ts"
   },
   "dependencies": {
     "lmdb": "^3.5.5",
