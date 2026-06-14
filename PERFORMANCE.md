@@ -1,206 +1,175 @@
 # Performance
 
-This document describes how to measure lmdis throughput and latency, summarizes a reference run on this repository, and compares those numbers to published benchmarks for **Upstash Redis**, **local Redis**, and **Cloudflare Workers KV**.
+lmdis is a **self-hosted HTTP KV store** (LMDB + JSON REST). Most performance leakage comes from internet routing layer.
 
-> **Important:** These systems target different deployment models. lmdis is a self-hosted HTTP KV store backed by LMDB on a single node. Local Redis speaks the Redis protocol in-process over TCP. Upstash and Cloudflare KV are managed, globally distributed HTTP/edge services. Treat cross-system numbers as directional context, not a controlled apples-to-apples shootout.
+The numbers below mix **benchmarking runs** with **published third-party results**. Treat the comparison as directional, not a scientific comparison of apples-for-apples.
+
+---
+
+## At a glance
+
+| Store | GET p50 (typical) | SET p50 (typical) | Transport | Replication |
+|-------|-------------------|-------------------|-----------|-------------|
+| **lmdis** (same host) | ~0.2 ms | ~3 ms | HTTP JSON | None |
+| **lmdis** (remote HTTPS) | ~22 ms | ~25 ms | HTTP JSON | None |
+| **Upstash Redis** (REST, edge→region) | ~7 ms | ~6 ms | HTTP REST | Global |
+| **Upstash Redis** (same AWS region) | < 1 ms | ~6 ms | HTTP REST | Optional |
+| **Local Redis** (same host) | ~0.17 ms | ~0.17 ms | TCP (RESP) | Manual |
+| **Cloudflare KV** (cached read) | ~3 ms | ~170 ms | Worker binding | Edge cache |
+| **Cloudflare KV** (cold read / write) | ~31 ms | ~170 ms | Worker binding | Edge cache |
+
+---
+
+## lmdis vs Upstash
+
+Both speak **HTTP** — one request per command, JSON on the wire. Upstash adds managed global replicas; lmdis is a single LMDB directory you host.
+
+### By workload
+
+| Workload | lmdis local | lmdis remote | Upstash REST¹ | Who wins |
+|----------|-------------|--------------|---------------|----------|
+| GET / read | 0.2 ms p50 | 21.9 ms p50 | 6.8 ms p50 (cold) | Local lmdis; Upstash beats remote lmdis |
+| SET / write | 2.8 ms p50 | 24.5 ms p50 | 6.2 ms p50 | Upstash beats remote; local lmdis competitive |
+| Read-after-write | ~3 ms | ~24 ms | 24.8 ms p50 | Tie at remote; local lmdis wins |
+| GET p99 tail | 1.5 ms | 41.7 ms | 28.2 ms | Local lmdis; Upstash tighter than remote lmdis |
+| SET p99 tail | 9.4 ms | 117 ms | 8.6 ms | Upstash — remote lmdis has long tails |
+| Throughput (sequential GET) | ~3,600 ops/s | ~42 ops/s | varies by region | Local lmdis; both HTTP stores slow over WAN |
+
+¹ [Upstash vs Cloudflare KV (2026)](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv) — Cloudflare Worker in IAD → Upstash primary in us-east-1. Global reads: [Deno benchmark](https://deno.com/blog/comparing-deno-kv) reports **19 ms p50 / 139 ms p99**. Same-region reads: [Upstash docs](https://upstash.com/docs/common/concepts/global-replication) claim **sub-millisecond**.
+
+### Summary
+
+| | lmdis | Upstash |
+|--|-------|---------|
+| **Co-located client** | GET ~0.2 ms — **faster** than Upstash's edge path | Same-region sub-ms reads possible |
+| **Remote client** | ~22 ms p50 — **3–4× slower** than Upstash REST (~6 ms) | Optimized edge→AWS routing |
+| **Ops burden** | You host one process + LMDB dir | Fully managed, global replicas |
+| **Consistency** | Strong, single node | Eventual when globally replicated |
+| **Cost model** | Your VPS | Per-request + storage |
+
+**Pick lmdis** when the app and store share a host (or VPC) and you want zero vendor lock-in. **Pick Upstash** when clients are serverless/edge everywhere and you need multi-region without running infra.
+
+---
+
+## lmdis vs local Redis
+
+Redis uses **TCP + RESP** — no HTTP, no JSON, optional pipelining. It's the throughput ceiling for key/value on one machine.
+
+| | lmdis (local) | Local Redis² |
+|--|---------------|--------------|
+| GET p50 | 0.2 ms | 0.17 ms |
+| SET p50 | 2.8 ms | 0.17 ms |
+| Throughput | ~3,600 GET ops/s | ~150,000 ops/s |
+| Relative speed | 1× (baseline) | **~10–50× faster** raw ops |
+| Setup | Single Bun binary + LMDB | Redis server + client |
+| API surface | Subset via HTTP | Full Redis |
+
+² [Arm redis-benchmark](https://learn.arm.com/learning-paths/servers-and-cloud-computing/redis-data-searching/benchmarking/) — 100k requests, 50 concurrent clients, Google Axion C4A VM. [ioredis](https://github.com/redis/ioredis?tab=readme-ov-file#benchmarks) pipelining adds another **50–300%**.
+
+**Pick lmdis** for a lightweight HTTP KV with a copy-paste SDK — no Redis to install. **Pick Redis** when you need maximum ops/sec, pub/sub, transactions, or the full command set.
+
+---
+
+## lmdis vs Cloudflare KV
+
+KV is **eventually consistent** and **write-heavy slow** — optimized for config blobs and cached reads at the edge, not a primary database.
+
+| Workload | lmdis remote | Cloudflare KV³ | Notes |
+|----------|--------------|----------------|-------|
+| Hot read p50 | 21.9 ms | 2.6 ms | KV wins — in-memory regional cache |
+| Cold read p50 | 21.9 ms | 30.6 ms | Roughly similar |
+| Write p50 | 24.5 ms | 171.8 ms | lmdis **~7× faster** |
+| Read-after-write p50 | ~24 ms | 176.2 ms | lmdis **~7× faster** — KV propagation is slow |
+| Global read p99 | 41.7 ms (one client) | 742 ms (Deno global)⁴ | KV tails badly under global load |
+
+³ [Upstash vs KV (2026)](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv), [Cloudflare KV changelog (Aug 2025)](https://developers.cloudflare.com/changelog/post/2025-08-22-kv-performance-improvements/) (~50 ms p95 reads), [Cloudflare blog](https://blog.cloudflare.com/workers-kv-low-latency/) (< 1 ms hot reads).
+
+⁴ [Deno KV comparison](https://deno.com/blog/comparing-deno-kv) — 10k samples, global traffic.
+
+**Pick lmdis** when you write often or need immediate read-your-writes consistency. **Pick KV** when data is read-heavy, rarely changes, and lives inside Cloudflare Workers.
+
+---
+
+## Side-by-side: all four stores
+
+Scenario-level view using our lmdis runs + published benchmarks for the others.
+
+| Scenario | lmdis local | lmdis remote | Upstash REST | Local Redis | CF KV |
+|----------|-------------|--------------|--------------|-------------|-------|
+| GET p50 | **0.2 ms** | 21.9 ms | 6.8 ms | **0.17 ms** | 2.6 ms (hot) |
+| GET p99 | **1.5 ms** | 41.7 ms | 28.2 ms | **0.19 ms** | 5.8 ms (hot) |
+| SET p50 | 2.8 ms | 24.5 ms | **6.2 ms** | **0.17 ms** | 171.8 ms |
+| SET p99 | 9.4 ms | 117 ms | **8.6 ms** | **0.19 ms** | 253.2 ms |
+| Sequential GET throughput | **3,600/s** | 42/s | — | **150,000/s** | — |
+| Strong consistency | Yes | Yes | Eventual (global) | Yes | No |
+| Self-hosted | Yes | Yes | No | Yes | No |
+
+**Fastest reads (same machine):** local Redis ≈ lmdis ≪ Upstash REST ≪ remote lmdis  
+**Fastest writes (remote/serverless):** Upstash ≈ remote lmdis ≪ Cloudflare KV  
+**Best edge cached reads:** Cloudflare KV (hot keys only)
+
+---
+
+## lmdis benchmark results
+
+500 sequential ops, 256-byte values, one HTTP request per command.  
+`BENCHMARK_EMBEDDED=1 bun run benchmark` (local) · `bun run benchmark` (remote via `LMDIS_URL`).
+
+### Local (loopback)
+
+| Scenario | p50 | p99 | Throughput |
+|----------|-----|-----|------------|
+| GET (hot key) | 0.2 ms | 1.5 ms | ~3,600 ops/s |
+| SET (with TTL) | 2.8 ms | 9.4 ms | ~305 ops/s |
+| Mixed SET/GET | 1.1 ms | 3.8 ms | ~841 ops/s |
+| HINCR | 1.7 ms | 3.7 ms | ~543 ops/s |
+| SADD + SMEMB | 2.4 ms | 8.1 ms | ~389 ops/s |
+
+### Remote ([production run](./benchmark/results/mqcdqbb8-af6fae77.json))
+
+| Scenario | p50 | p99 | Throughput |
+|----------|-----|-----|------------|
+| GET (hot key) | 21.9 ms | 41.7 ms | ~42 ops/s |
+| SET (with TTL) | 24.5 ms | 117 ms | ~25 ops/s |
+| Mixed SET/GET | 23.6 ms | 81 ms | ~38 ops/s |
+| HINCR | 24.6 ms | 2,106 ms | ~10 ops/s |
+| SADD + SMEMB | 47.8 ms | 66.8 ms | ~20 ops/s |
+
+Remote GET ≈ SET because **network RTT dominates** — the local read advantage disappears over HTTPS.
+
+---
+
+## When to use what
+
+| You need… | Pick |
+|-----------|------|
+| Fastest KV on same host as app | **Local Redis** (max ops) or **lmdis** (HTTP, simpler) |
+| Self-hosted HTTP API, no Redis install | **lmdis** |
+| Serverless / multi-region, managed | **Upstash** |
+| Workers-only config, mostly reads | **Cloudflare KV** |
+| Frequent writes + immediate consistency | **lmdis** or **Upstash** — not KV |
+
+---
 
 ## Running the benchmark
 
-The benchmark lives in [`benchmark/`](./benchmark/). Each run is **idempotent**:
-
-- All keys are prefixed with `bench:<runId>:` so runs do not collide.
-- String values are written with a TTL (default **120 s**, configurable **60–300 s**) so the store auto-prunes if a run exits early.
-- Hash and set keys (which do not support TTL) are explicitly deleted at the end of each run.
-
-### Embedded mode (recommended for local measurement)
-
-Spins up an isolated lmdis instance on a random port and a fresh LMDB directory under `data/` (already gitignored):
-
 ```sh
-BENCHMARK_EMBEDDED=1 bun run benchmark
+BENCHMARK_EMBEDDED=1 bun run benchmark   # local baseline
+bun run benchmark                        # remote — set LMDIS_URL + LMDIS_REST_TOKEN
 ```
 
-### Against a running server
+Idempotent: keys prefixed `bench:<runId>:`, 120 s TTL on strings, hash/set keys deleted at end. Results → `benchmark/results/<runId>.json`.
 
-```sh
-# terminal 1
-LMDIS_REST_TOKEN=your-token bun start
-
-# terminal 2
-LMDIS_REST_TOKEN=your-token bun run benchmark
-```
-
-### Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BENCHMARK_EMBEDDED` | off | Set to `1` to start an embedded server |
-| `BENCHMARK_ITERATIONS` | `500` | Samples per scenario (10–50,000) |
-| `BENCHMARK_WARMUP` | `50` | Warmup GETs before the hot-key read test |
-| `BENCHMARK_TTL_SEC` | `120` | TTL on benchmark string keys (60–300) |
-| `BENCHMARK_VALUE_SIZE` | `256` | Payload size in bytes for SET/GET tests |
-| `LMDIS_URL` | `http://127.0.0.1:3000` | Target URL (external mode) |
-| `LMDIS_REST_TOKEN` | *(required)* | Bearer token (external mode) |
-
-JSON results are written to `benchmark/results/<runId>.json`.
-
-### Scenarios
-
-| Scenario | What it measures |
-|----------|------------------|
-| SET (string, with TTL) | Sequential writes over HTTP + LMDB persistence |
-| GET (hot key) | Repeated reads of one warmed key |
-| Mixed 50/50 SET/GET | 32-key working set, alternating writes and reads |
-| HINCR | Hash field increment |
-| SADD + SMEMB | Set add followed by members listing (two HTTP round-trips) |
-
-Each sample times one client round-trip (HTTP request → JSON parse → handler → response). There is no pipelining or batch API.
-
----
-
-## Reference lmdis results
-
-Measured on the development machine used for this repository (embedded mode, 500 iterations, 256-byte values, 120 s TTL):
-
-| Scenario | Throughput | p50 | p95 | p99 |
-|----------|------------|-----|-----|-----|
-| SET (with TTL) | ~305 ops/s | 2.8 ms | 7.1 ms | 9.4 ms |
-| GET (hot key) | ~3,600 ops/s | 0.20 ms | 0.62 ms | 1.5 ms |
-| Mixed SET/GET | ~841 ops/s | 1.1 ms | 2.8 ms | 3.8 ms |
-| HINCR | ~543 ops/s | 1.7 ms | 3.1 ms | 3.7 ms |
-| SADD + SMEMB | ~389 ops/s | 2.4 ms | 4.4 ms | 8.1 ms |
-
-**Takeaways for lmdis:**
-
-- **Reads dominate writes** — LMDB memory-maps data; GET avoids the TTL write path on hot keys.
-- **HTTP overhead is visible** — every command is a full HTTP POST with JSON body and response, similar in shape to Upstash’s REST API but without geographic replication.
-- **Complex types cost more** — `SADD` + `SMEMB` issues two sequential HTTP calls (SDK limitation) and scans set members on read.
-
-Re-run `BENCHMARK_EMBEDDED=1 bun run benchmark` on your hardware for numbers that match your deployment.
-
----
-
-## Comparison with other KV stores
-
-### At a glance
-
-| Store | Transport | Typical deployment | Consistency | Best for |
-|-------|-----------|-------------------|-------------|----------|
-| **lmdis** | HTTP JSON REST | Self-hosted, single node | Strong (local LMDB) | Low-ops embedded KV, Bun/edge backends via proxy |
-| **Local Redis** | Redis RESP (TCP) | Co-located process/container | Strong (single instance) | Maximum ops/sec, rich Redis feature set |
-| **Upstash Redis** | HTTP REST or RESP | Managed, multi-region | Eventual (global) | Serverless/edge with Redis semantics |
-| **Cloudflare KV** | Workers binding / HTTP | Managed, edge-cached | Eventual | Read-heavy config, static-ish data at the edge |
-
-### Single-operation latency (published benchmarks)
-
-These figures come from third-party measurements. Region, payload size, and client setup differ across sources — use them to understand **order-of-magnitude**, not to rank products definitively.
-
-#### Local Redis (`redis-benchmark`, same host)
-
-Arm’s learning-path benchmark on a Google Axion C4A VM with 50 concurrent clients and 100k requests per operation ([Arm Learning Paths — Benchmark Redis](https://learn.arm.com/learning-paths/servers-and-cloud-computing/redis-data-searching/benchmarking/)):
-
-| Operation | Throughput | Avg latency | p50 | p99 |
-|-----------|------------|-------------|-----|-----|
-| SET | ~150k ops/s | 0.17 ms | 0.17 ms | 0.19 ms |
-| GET | ~150k ops/s | 0.17 ms | 0.17 ms | 0.19 ms |
-
-Native Redis over loopback avoids HTTP and JSON serialization entirely. Expect **roughly 10–50× higher throughput** than HTTP-based clients for simple key/value work when Redis is co-located.
-
-The ioredis README notes that pipelining can improve throughput by **50–300%** for batched commands ([redis/ioredis — Benchmarks](https://github.com/redis/ioredis?tab=readme-ov-file#benchmarks)).
-
-#### Upstash Redis (HTTP REST from Cloudflare Worker, IAD)
-
-Upstash compared their global Redis to Cloudflare KV from the same Worker in Washington DC ([Upstash Blog — Upstash Redis vs Cloudflare KV, 2026](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv)):
-
-| Scenario | Upstash p50 | Upstash p99 |
-|----------|-------------|-------------|
-| Cold read | 6.8 ms | 28.2 ms |
-| Single write | 6.2 ms | 8.6 ms |
-| Read-after-write | 24.8 ms | 37.0 ms |
-
-Upstash documentation reports **sub-millisecond read latency** when client and database share the same AWS region ([Upstash — Global Replication](https://upstash.com/docs/common/concepts/global-replication)).
-
-For global read traffic across many regions, Deno’s multi-database benchmark (10k samples) measured Upstash Redis at **19 ms p50 / 139 ms p99** read latency ([Deno — Comparing Deno KV](https://deno.com/blog/comparing-deno-kv)).
-
-#### Cloudflare Workers KV
-
-| Source | Scenario | p50 / typical | p99 / tail |
-|--------|----------|---------------|------------|
-| [Upstash vs KV (IAD Worker)](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv) | Hot read (cached) | 2.6 ms | 5.8 ms |
-| [Upstash vs KV (IAD Worker)](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv) | Cold read | 30.6 ms | 45.6 ms |
-| [Upstash vs KV (IAD Worker)](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv) | Single write | 171.8 ms | 253.2 ms |
-| [Cloudflare changelog (Aug 2025)](https://developers.cloudflare.com/changelog/post/2025-08-22-kv-performance-improvements/) | Global read (p95/p99) | ~50 ms p95 | ~250 ms p99 |
-| [Cloudflare engineering blog](https://blog.cloudflare.com/workers-kv-low-latency/) | Hot read (in-memory cache) | < 1 ms | — |
-| [Zhen Wang — KV characteristics](https://zmxv.medium.com/performance-characteristics-of-cloudflare-workers-kv-ef44ed7990b9) | `put` / miss read | ~200 ms | high variance on `list` |
-
-KV is optimized for **cached, read-heavy** workloads. Writes and read-after-write paths are substantially slower than Upstash or co-located Redis because of eventual consistency and edge propagation.
-
-### Rough positioning vs lmdis (reference run)
-
-| Workload | lmdis (embedded) | Local Redis¹ | Upstash REST² | Cloudflare KV³ |
-|----------|------------------|--------------|---------------|----------------|
-| Hot GET | ~0.2 ms p50 | ~0.17 ms p50 | ~2.6–6.8 ms p50 | ~2.6 ms p50 (cached) |
-| SET / write | ~2.8 ms p50 | ~0.17 ms p50 | ~6.2 ms p50 | ~172 ms p50 |
-| Throughput (GET) | ~3.6k ops/s | ~150k ops/s | varies by region | varies; cache-dependent |
-
-¹ [Arm redis-benchmark](https://learn.arm.com/learning-paths/servers-and-cloud-computing/redis-data-searching/benchmarking/) — same-machine TCP, 50 concurrent clients.
-
-² [Upstash vs KV blog](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv) — HTTPS from Cloudflare Worker to us-east-1 primary.
-
-³ [Upstash vs KV blog](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv) and [Cloudflare KV changelog](https://developers.cloudflare.com/changelog/post/2025-08-22-kv-performance-improvements/).
-
-**Where lmdis fits:** For a **single-node, self-hosted** deployment, lmdis GET latency (~0.2 ms p50 in the reference run) is in the same ballpark as co-located Redis for simple reads, while paying the HTTP/JSON tax on writes (~3 ms vs ~0.17 ms for native Redis). It avoids managed-service WAN latency but does not replicate globally like Upstash or KV.
-
----
-
-## Architectural factors
-
-### Why lmdis writes are slower than reads
-
-1. **HTTP + JSON** — Each command is a POST with Zod validation and a JSON response.
-2. **LMDB durability** — Writes go through LMDB transactions (memory-mapped, fsync policy depends on OS/page cache).
-3. **TTL metadata** — SET with `EX`/`PX` writes both the value and an expiry index key (`e\x00<key>`).
-4. **No pipelining** — The SDK sends one command per HTTP request.
-
-### Why lmdis differs from managed edge KV
-
-- **No geographic replication** — All data lives on one LMDB directory; no cross-region read replicas.
-- **Strong local consistency** — Reads reflect the latest local write immediately (unlike KV’s eventual model).
-- **Lazy TTL expiry** — Expired string keys are removed on read, not by a background sweeper ([`src/store.ts`](./src/store.ts)).
-
-### When to choose what
-
-| Need | Consider |
-|------|----------|
-| Maximum ops/sec on one machine | Local Redis with pipelining |
-| Serverless / multi-region without ops | Upstash Redis |
-| Edge config blobs, rare writes | Cloudflare KV |
-| Single-node HTTP KV, Bun-native, copy-paste SDK | lmdis |
+Disable `LMDIS_RATE_LIMIT` for fair remote runs (~2,500 requests per full benchmark).
 
 ---
 
 ## Sources
 
-1. **Arm Learning Paths** — [Benchmark Redis](https://learn.arm.com/learning-paths/servers-and-cloud-computing/redis-data-searching/benchmarking/) — `redis-benchmark` SET/GET on Arm64 C4A (~150k ops/s, ~0.17 ms avg).
-2. **ioredis** — [GitHub README — Benchmarks / Autopipelining](https://github.com/redis/ioredis?tab=readme-ov-file#benchmarks) — pipelining gains.
-3. **Upstash** — [Global Replication docs](https://upstash.com/docs/common/concepts/global-replication) — sub-ms same-region reads.
-4. **Upstash** — [Upstash Redis vs Cloudflare KV (2026)](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv) — head-to-head from Cloudflare Worker (IAD).
-5. **Upstash** — [Benchmarking Cloudflare KV vs Upstash Redis](https://upstash.com/blog/edgecaching-benchmark) — global latency under ~400 RPS load.
-6. **Upstash** — [Serverless database connections](https://upstash.com/blog/serverless-database-connections) — connection reuse vs ephemeral latency.
-7. **Deno** — [Comparing Deno KV, Upstash, Cloudflare KV, DynamoDB, Firestore](https://deno.com/blog/comparing-deno-kv) — global read/write percentiles (10k samples).
-8. **Deno** — [denoland/deno-kv-benchmarks](https://github.com/denoland/deno-kv-benchmarks) — open benchmark harness.
-9. **Cloudflare** — [Workers KV performance improvements changelog (Aug 2025)](https://developers.cloudflare.com/changelog/post/2025-08-22-kv-performance-improvements/) — p95/p99 read improvements.
-10. **Cloudflare** — [We made Workers KV up to 3x faster](https://blog.cloudflare.com/workers-kv-low-latency/) — hot read < 1 ms, tiered cache.
-11. **Zhen Wang** — [Performance characteristics of Cloudflare Workers KV](https://zmxv.medium.com/performance-characteristics-of-cloudflare-workers-kv-ef44ed7990b9) — write/miss ~200 ms; [open-source harness](https://github.com/voggle/cf-perf).
-12. **bruceharrison1984** — [kv-d1-benchmark](https://github.com/bruceharrison1984/kv-d1-benchmark) — single-zone KV read/write timings.
-
----
-
-## Limitations of this comparison
-
-- **Different clients:** lmdis benchmark uses Bun `fetch` + JSON; Redis benchmarks use `redis-benchmark` or RESP clients; KV benchmarks often use Workers bindings (zero HTTP hop).
-- **Different hardware:** Reference lmdis numbers are from one developer machine; Arm/Google numbers use cloud VMs.
-- **Feature scope:** lmdis implements a subset of Redis commands; no `MULTI`/`EXEC`, pub/sub, or native pipelining.
-- **No managed SLA:** Self-hosted performance depends on disk, CPU, concurrent load, and whether rate limiting or access logging is enabled.
-
-For production sizing, run `bun run benchmark` on the target host with `LMDIS_RATE_LIMIT` disabled and representative payload sizes.
+- [Upstash vs Cloudflare KV (2026)](https://upstash.com/blog/upstash-redis-vs-cloudflare-kv)
+- [Upstash global replication docs](https://upstash.com/docs/common/concepts/global-replication)
+- [Deno KV comparison (10k samples)](https://deno.com/blog/comparing-deno-kv)
+- [Arm — redis-benchmark](https://learn.arm.com/learning-paths/servers-and-cloud-computing/redis-data-searching/benchmarking/)
+- [Cloudflare KV performance changelog (Aug 2025)](https://developers.cloudflare.com/changelog/post/2025-08-22-kv-performance-improvements/)
+- [Cloudflare — KV up to 3× faster](https://blog.cloudflare.com/workers-kv-low-latency/)
+- [Cloudflare KV characteristics (Zhen Wang)](https://zmxv.medium.com/performance-characteristics-of-cloudflare-workers-kv-ef44ed7990b9)

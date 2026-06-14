@@ -1,40 +1,40 @@
 # lmdis
 
-Lightweight HTTP key-value store backed by LMDB. Redis-compatible command API over HTTP, built with Bun.
+HTTP key-value store over LMDB. Redis-like command API sent as JSON arrays over `POST /`. Runtime: Bun + TypeScript (no build step).
 
 ## Quick start
 
 ```bash
 bun install
-
-# Generate a token and save it (Bun auto-loads .env)
-echo "LMDIS_REST_TOKEN=$(openssl rand -hex 32)" >> .env
-
-bun start
 ```
 
 ```bash
-# Set a value
-curl -X POST localhost:3000 \
-  -H "Authorization: Bearer $LMDIS_REST_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '["SET", "hello", "world"]'
-
-# Get a value
-curl -X POST localhost:3000 \
-  -H "Authorization: Bearer $LMDIS_REST_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '["GET", "hello"]'
+echo "LMDIS_REST_TOKEN=$(openssl rand -hex 32)" >> .env
 ```
 
-Interactive API docs at [localhost:3000/docs](http://localhost:3000/docs) (no auth required).
+```bash
+# bun run src/index.ts ;  bun dev == --watch
+bun start          
+```
 
-## SDK
+```bash
+# set
+curl -X POST localhost:3000 -H "Authorization: Bearer $LMDIS_REST_TOKEN" \
+  -H "Content-Type: application/json" -d '["SET","hello","world"]'
+```
 
-Copy [`src/sdk.ts`](src/sdk.ts) into your project (~130 lines, zero runtime dependencies). It mirrors the [Upstash Redis](https://upstash.com/docs/redis/features/restapi) client API over lmdis HTTP.
+```bash
+# get
+curl -X POST localhost:3000 -H "Authorization: Bearer $LMDIS_REST_TOKEN" \
+  -H "Content-Type: application/json" -d '["GET","hello"]'
+```
+
+### SDK
+
+Copy `src/sdk.ts` (~130 lines, zero deps) into your project. Mirrors the Upstash Redis REST client surface. Not on npm — vendor it or import from a checked-out clone.
 
 ```ts
-import { LmdisClient } from "./lmdis/sdk"; // path to your copy
+import { LmdisClient } from "./sdk"; // your vendored path
 
 const redis = new LmdisClient({
   url: process.env.LMDIS_URL ?? "http://localhost:3000",
@@ -45,186 +45,184 @@ await redis.set("hello", "world");
 const value = await redis.get<string>("hello");
 ```
 
-There is no npm package — vendor the file or import it from a checked-out clone. Self-host the server from this repo (`bun start`).
+## Details
 
-Runnable example (server must be up with `LMDIS_REST_TOKEN` in `.env`):
+- Transport: HTTP/JSON. Single endpoint for all data ops: `POST /`.
+- Storage: LMDB (memory-mapped, embedded, persistent).
+- Validation: Zod v4 + zod-openapi (OpenAPI 3.1 at `/openapi.json`).
+- Distribution: self-host from source or compiled binary. No npm package. SDK is vendored (`src/sdk.ts`).
+
+Deployment, process management, TLS, Docker: see [DEPLOY.md](./DEPLOY.md).
+
+## SDK (vendored)
+
+Serialization: `set` serializes values — strings as-is, number/boolean via `String()`, other types via `JSON.stringify`. `get` deserializes via `JSON.parse`, falling back to the raw string on parse failure. `sadd`/`srem` members: strings as-is, numbers via `String()`.
+
+Constructor: `new LmdisClient({ url, token, fetch? })`. Optional `fetch` override (defaults to global `fetch`). Throws `LmdisError` on non-2xx response or when `result` is absent.
+
+
+| Method                              | Wire command(s)                                | Returns              | Notes                                                                                                             |
+| ----------------------------------- | ---------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `set<T>(key, value, opts?)`         | `["SET",key,val,(EX|PX|EXAT|PXAT|KEEPTTL)?]`   | `"OK"`               | `opts`: `ex`/`px`/`exat`/`pxat`/`keepTtl` (mutually exclusive). `get`/`nx`/`xx` throw `LmdisError` (unsupported). |
+| `get<T>(key)`                       | `["GET",key]`                                  | `T | null`           | JSON-deserialized                                                                                                 |
+| `del(...keys)`                      | `["DEL",key]` × N                              | `number`             | One request per key; sums removed counts                                                                          |
+| `hincrby(key, field, increment)`    | `["HINCR",key,field,String(increment)]`        | `number`             |                                                                                                                   |
+| `sadd(key, ...members)`             | `["SADD",key,member]` × N                      | `number`             | One request per member; sums new-added counts                                                                     |
+| `smembers(key)`                     | `["SMEMB",key]`                                | `string[]`           |                                                                                                                   |
+| `srem(key, ...members)`             | `["SDEL",key,member]` × N                      | `number`             | One request per member; sums removed counts                                                                       |
+| `keys(pattern?)`                    | `["KEYS"]` or `["KEYS",pattern]`               | `string[]`           |                                                                                                                   |
+| `scanKeys(cursor, count, pattern?)` | `["SCANKEYS",cursor,count,("MATCH",pattern)?]` | `[string, string[]]` |                                                                                                                   |
+
+
+Runnable example (server must be running with `LMDIS_REST_TOKEN` in `.env`):
 
 ```bash
 bun examples/client.ts
 ```
 
+## HTTP API
+
+
+| Method | Path            | Auth   | Response body                                    |
+| ------ | --------------- | ------ | ------------------------------------------------ |
+| POST   | `/`             | bearer | Command result (see Commands)                    |
+| GET    | `/`             | none   | `302` redirect → `/docs`                         |
+| GET    | `/health`       | none   | `{"status":"ok"}`                                |
+| GET    | `/uptime`       | bearer | `{"uptimeSeconds":<int>}`                        |
+| GET    | `/openapi.json` | none   | OpenAPI 3.1 document                             |
+| GET    | `/docs`         | none   | HTML (Scalar API reference from `/openapi.json`) |
+
+
 ## Authentication
 
-lmdis uses a single bearer token, similar to [Upstash Redis REST API](https://upstash.com/docs/redis/features/restapi) auth.
+
+| Item             | Value                                                               |
+| ---------------- | ------------------------------------------------------------------- |
+| Header           | `Authorization: Bearer <token>`                                     |
+| Required env     | `LMDIS_REST_TOKEN` (server exits if unset)                          |
+| Protected routes | `POST /`, `GET /uptime`                                             |
+| Public routes    | `GET /health`, `GET /docs`, `GET /openapi.json`, `GET /`            |
+| Comparison       | `timingSafeEqual` (constant-time)                                   |
+| Missing token    | `401 {"error":"Missing authorization token","code":"UNAUTHORIZED"}` |
+| Invalid token    | `401 {"error":"Invalid authorization token","code":"UNAUTHORIZED"}` |
 
 
-|                           |                                                    |
-| ------------------------- | -------------------------------------------------- |
-| **Header**                | `Authorization: Bearer <token>`                    |
-| **Env var**               | `LMDIS_REST_TOKEN` (required at startup)           |
-| **Missing/invalid token** | `401` with `{"error":"...","code":"UNAUTHORIZED"}` |
-
-
-**Protected routes** — all data commands (`POST /`) and `GET /uptime`.
-
-**Public routes** — `GET /health` (load balancer probes), `GET /docs`, `GET /openapi.json`, and `GET /` (redirects to `/docs`).
-
-Generate a token:
-
-```bash
-openssl rand -hex 32
-```
-
-Example `.env`:
-
-```bash
-PORT=3000
-LMDIS_REST_TOKEN=a1b2c3d4e5f6...   # from openssl rand -hex 32
-```
-
-The server exits on startup if `LMDIS_REST_TOKEN` is not set.
+Generate a token: `openssl rand -hex 32`.
 
 ## Commands
 
-All examples below require `-H "Authorization: Bearer $LMDIS_REST_TOKEN"` unless noted.
+All commands are `POST /` with `Content-Type: application/json` body = a JSON array. All require the bearer header. Response is always a JSON object with either `result` (success) or `error`+`code` (failure).
 
 ### Strings
 
 
-| Command | POST body                 | Returns                                   |
-| ------- | ------------------------- | ----------------------------------------- |
-| `SET`   | `["SET", "key", "value"]` | `{"result":"OK"}`                         |
-| `GET`   | `["GET", "key"]`          | `{"result":"value"}` or `{"result":null}` |
-| `DEL`   | `["DEL", "key"]`          | `{"result":1}` or `{"result":0}`          |
+| CMD   | Request body      | Success response                      |
+| ----- | ----------------- | ------------------------------------- |
+| `SET` | `["SET","k","v"]` | `{"result":"OK"}`                     |
+| `GET` | `["GET","k"]`     | `{"result":"v"}` or `{"result":null}` |
+| `DEL` | `["DEL","k"]`     | `{"result":1}` or `{"result":0}`      |
 
-Optional TTL on `SET` (same as [Upstash Redis REST](https://upstash.com/docs/redis/features/restapi)):
 
-| Option | POST body example | Meaning |
-| ------ | ----------------- | ------- |
-| `EX` | `["SET", "key", "value", "EX", 60]` | Expire in 60 seconds |
-| `PX` | `["SET", "key", "value", "PX", 5000]` | Expire in 5000 ms |
-| `EXAT` | `["SET", "key", "value", "EXAT", 1718123456]` | Expire at Unix time (seconds) |
-| `PXAT` | `["SET", "key", "value", "PXAT", 1718123456789]` | Expire at Unix time (ms) |
-| `KEEPTTL` | `["SET", "key", "value", "KEEPTTL"]` | Update value, keep existing TTL |
+`SET` TTL options (append after value; mutually exclusive):
 
-A plain `SET` without TTL clears any previous expiration on that key. Expired keys return `null` on `GET` (lazy deletion).
 
-`DEL` removes the string value (if any) and all hash fields and set members stored under that key.
+| Option    | Request body                           | Semantics                        |
+| --------- | -------------------------------------- | -------------------------------- |
+| `EX`      | `["SET","k","v","EX",60]`              | expire in 60 seconds             |
+| `PX`      | `["SET","k","v","PX",5000]`            | expire in 5000 ms                |
+| `EXAT`    | `["SET","k","v","EXAT",1718123456]`    | expire at Unix time (seconds)    |
+| `PXAT`    | `["SET","k","v","PXAT",1718123456789]` | expire at Unix time (ms)         |
+| `KEEPTTL` | `["SET","k","v","KEEPTTL"]`            | replace value, keep existing TTL |
+
+
+- Plain `SET` (no TTL option) **clears** any existing expiry on the key.
+- TTL values must be positive integers (number or numeric string).
+- Expired keys: `GET` returns `null` (lazy expiry on access).
+- `DEL` removes the string value, its TTL entry, **all** hash fields, **all** set members, and the key index entry. Returns `1` if anything existed, else `0`.
 
 ### Hashes
 
 
-| Command | POST body                        | Returns               |
-| ------- | -------------------------------- | --------------------- |
-| `HINCR` | `["HINCR", "key", "field", "1"]` | `{"result":<number>}` |
+| CMD     | Request body                | Success response      |
+| ------- | --------------------------- | --------------------- |
+| `HINCR` | `["HINCR","k","field","1"]` | `{"result":<number>}` |
 
 
-Atomically increments a hash field by the given amount.
+- `amount` is a string of a finite number (positive, negative, or fractional). Field initializes at `0` if absent.
 
 ### Sets
 
 
-| Command | POST body                   | Returns                          |
-| ------- | --------------------------- | -------------------------------- |
-| `SADD`  | `["SADD", "key", "member"]` | `{"result":1}` or `{"result":0}` |
-| `SMEMB` | `["SMEMB", "key"]`          | `{"result":["a","b"]}`           |
-| `SDEL`  | `["SDEL", "key", "member"]` | `{"result":1}` or `{"result":0}` |
+| CMD     | Request body            | Success response                                         |
+| ------- | ----------------------- | -------------------------------------------------------- |
+| `SADD`  | `["SADD","k","member"]` | `{"result":1}` (new) or `{"result":0}` (already present) |
+| `SMEMB` | `["SMEMB","k"]`         | `{"result":["a","b"]}`                                   |
+| `SDEL`  | `["SDEL","k","member"]` | `{"result":1}` (removed) or `{"result":0}` (absent)      |
 
 
 ### Key enumeration
 
 
-| Command    | POST body                                      | Returns                                      |
-| ---------- | ---------------------------------------------- | -------------------------------------------- |
-| `KEYS`     | `["KEYS"]` or `["KEYS", "pattern"]`            | `{"result":["key1","key2"]}`                 |
-| `SCANKEYS` | `["SCANKEYS", "0", 100]` or with `"MATCH", "pattern"` | `{"result":["<cursor>", ["key1"]]}` |
+| CMD        | Request body                                                       | Success response                     |
+| ---------- | ------------------------------------------------------------------ | ------------------------------------ |
+| `KEYS`     | `["KEYS"]` or `["KEYS","pattern"]`                                 | `{"result":["k1","k2"]}`             |
+| `SCANKEYS` | `["SCANKEYS","0",100]` or `["SCANKEYS","0",100,"MATCH","pattern"]` | `{"result":["<nextCursor>",["k1"]]}` |
 
 
-Both commands walk a dedicated user-key index (`O(k)` over logical keys, not LMDB hash/set rows). `MATCH` uses Redis-style glob (`*`, `?`, `[class]`). Prefer `SCANKEYS` on large keyspaces — `KEYS` returns the full list in one response.
+- Both iterate a dedicated logical-key index: `O(k)` over user keys, not over hash/set rows.
+- `MATCH` pattern: Redis-style glob — `*` (any seq), `?` (one char), `[abc]` / `[a-z]` (class), `\` (escape). Patterns ending in `literal`* with no other metachars use an indexed prefix range scan.
+- `SCANKEYS`: `cursor` is a string (`"0"` = start; returned non-`"0"` cursor = more results). `count` ≤ `1000`. Returns `[nextCursor, keys]`; `nextCursor === "0"` means iteration complete.
+- `KEYS` returns the full matching list in one response — prefer `SCANKEYS` on large keyspaces.
+
+## Errors
 
 
-### Server
+| HTTP | Body                                                                     | Trigger                          |
+| ---- | ------------------------------------------------------------------------ | -------------------------------- |
+| 400  | `{"error":"invalid JSON",...}` *(code `VALIDATION_ERROR`)*               | malformed request JSON           |
+| 400  | `{"error":<zod message>,...}` *(code `VALIDATION_ERROR`)*                | request failed schema validation |
+| 401  | `{"error":"...","code":"UNAUTHORIZED"}`                                  | missing/invalid bearer token     |
+| 413  | `{"error":"request body too large (max 1MB)","code":"VALIDATION_ERROR"}` | `Content-Length` > 1,000,000     |
+| 429  | `{"error":"rate limit exceeded","code":"RATE_LIMITED"}`                  | rate limit exceeded              |
+| 500  | `{"error":<message>,"code":"INTERNAL_ERROR"}`                            | uncaught handler error           |
 
 
-| Endpoint            | Auth   | Returns                 |
-| ------------------- | ------ | ----------------------- |
-| `GET /health`       | none   | `{"status":"ok"}`       |
-| `GET /uptime`       | bearer | `{"uptimeSeconds":123}` |
-| `GET /openapi.json` | none   | OpenAPI 3.1 spec        |
-| `GET /docs`         | none   | Interactive API docs    |
+All error bodies share the shape `{"error":string,"code":string}`. All success bodies share `{"result":<value>}`.
+
+## Constraints
+
+- Request body: max 1 MB (`Content-Length` enforced, `413`).
+- `SCANKEYS` count: max `1000`.
+- Keys/fields/members: non-empty strings, must not contain `\x00` (used as internal LMDB delimiter).
+- `SET` TTL options are mutually exclusive.
+- No transactions / batch / pipelining at the protocol level (one command per request).
+- No CORS headers. Server-to-server only; browser clients must go through a same-origin backend proxy that holds the token.
+- `GET /uptime` resets on `bun run dev` (`--watch`) hot-reload (dev-only; production keeps accurate uptime until restart).
+
+## Environment variables
+
+Bun auto-loads `.env`.
 
 
-Health check (no auth):
-
-```bash
-curl localhost:3000/health
-```
-
-## Limitations
-
-- No transactions or batch operations (MULTI/EXEC)
-- Single bearer token for authentication — no multi-user or RBAC support
-- `KEYS` is O(k) and returns all matching keys in one response — prefer `SCANKEYS` on large keyspaces
-- Request body size capped at 1MB (`413` when `Content-Length` exceeds the limit)
-- No CORS — lmdis is intended for server-to-server use. Browser clients should call your own backend, which proxies requests to lmdis using `LMDIS_REST_TOKEN` server-side.
-- `/uptime` resets on `bun run dev` (`--watch`) hot-reload — dev-mode limitation only; production processes keep accurate uptime until restart
-
-## Browser clients
-
-lmdis does not set CORS headers. Cross-origin browser JavaScript cannot call lmdis directly — and should not, because exposing `LMDIS_REST_TOKEN` in frontend code leaks full database access.
-
-Instead, add a same-origin endpoint on your backend that forwards commands:
-
-```ts
-// your-backend/routes/kv.ts — same-origin to your frontend
-if (req.method === "POST") {
-  const body = await req.json();
-  const res = await fetch(process.env.LMDIS_URL!, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.LMDIS_REST_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  return Response.json(await res.json(), { status: res.status });
-}
-```
-
-Server-to-server clients (`curl`, Bun/Node backends, workers) are unaffected — CORS is enforced only by browsers.
-
-## Configuration
+| Variable           | Default      | Meaning                                                              |
+| ------------------ | ------------ | -------------------------------------------------------------------- |
+| `LMDIS_REST_TOKEN` | *(required)* | Bearer token. Server exits if unset.                                 |
+| `PORT`             | `3000`       | HTTP listen port                                                     |
+| `LMDIS_RATE_LIMIT` | *(disabled)* | Max requests/IP/minute. `0` or unset = off. Must be `> 0` to enable. |
+| `LMDIS_ACCESS_LOG` | `0`          | `1` = log `METHOD path status <ms>` per request to stdout            |
+| `LMDB_PATH`        | `data/lmdb`  | LMDB data file path (relative to working directory)                  |
 
 
-| Variable           | Default      | Description                                              |
-| ------------------ | ------------ | -------------------------------------------------------- |
-| `PORT`             | `3000`       | HTTP listen port                                         |
-| `LMDIS_REST_TOKEN` | *(required)* | Bearer token for all routes except `/health`             |
-| `LMDIS_RATE_LIMIT` | *(disabled)* | Max requests per client IP per minute; `0` or unset = no limit |
-| `LMDIS_ACCESS_LOG` | `0`          | Set to `1` to log `METHOD path status duration` per request |
+### Rate limiting
 
-When `LMDIS_RATE_LIMIT` is set, lmdis tracks requests per client IP (from `X-Forwarded-For` or `X-Real-IP` when behind a proxy). All routes count toward the limit, including `GET /health`. Exceeded requests return `429` with `{"error":"rate limit exceeded","code":"RATE_LIMITED"}`.
-
-Bun auto-loads `.env` files.
-
-## Tech stack
-
-- [Bun](https://bun.sh) — runtime and HTTP server
-- [LMDB](https://github.com/Venemo/node-lmdb) — embedded key-value storage
-- [Zod](https://zod.dev) — request validation and OpenAPI schema generation
-
-## Deployment
-
-See [DEPLOY.md](./DEPLOY.md) for production setup, Docker, systemd, and security notes.
+When `LMDIS_RATE_LIMIT > 0`: per-IP fixed window of 60 s. Client IP = first entry of `X-Forwarded-For`, else `X-Real-IP`, else literal `"unknown"`. All routes count (including `GET /health`). Over-limit requests return `429` `{"error":"rate limit exceeded","code":"RATE_LIMITED"}`. In-memory, single-instance only — use a reverse proxy for multi-instance / stricter limits.
 
 ## Development
 
 ```bash
 bun install
-bun run dev      # --watch mode (set LMDIS_REST_TOKEN in .env first)
-bun test         # auto-discovers tests/
-bunx tsc --noEmit # typecheck
+bun run dev        # src/index.ts with --watch
+bun test           # auto-discovers tests/
+bunx tsc --noEmit  # typecheck (no script defined)
 ```
-
-`bun run dev` reloads the process on file changes, which resets `/uptime` to zero. Use `bun start` when you need a stable uptime counter during local testing.
 

@@ -1,99 +1,79 @@
 # Deploying lmdis
 
+Production deployment reference. Runtime: Bun (>= 1.0), no build step (Bun runs TypeScript directly). API/auth/command details: see [README.md](./README.md).
+
 ## Prerequisites
 
-- [Bun](https://bun.sh) >= 1.0 on the target machine
-- A strong random token for `LMDIS_REST_TOKEN`
+- Bun >= 1.0 on the host.
+- A strong random token for `LMDIS_REST_TOKEN` (`openssl rand -hex 32`).
+- A persistent disk location for LMDB data (`data/lmdb` by default).
 
-## Authentication
+## Environment variables
 
-Every request must include a bearer token **except** `GET /health`, `GET /docs`, `GET /openapi.json`, and `GET /` (redirect to docs).
+Bun auto-loads `.env`.
 
-| | |
-|---|---|
-| **Header** | `Authorization: Bearer <token>` |
-| **Env var** | `LMDIS_REST_TOKEN` (required — server refuses to start without it) |
-| **Public routes** | `GET /health` (probes), `GET /docs`, `GET /openapi.json`, `GET /` — no auth |
+| Variable             | Default        | Required | Meaning                                              |
+| -------------------- | -------------- | -------- | ---------------------------------------------------- |
+| `LMDIS_REST_TOKEN`   | *(none)*       | **yes**  | Bearer token. Server exits if unset/empty.           |
+| `PORT`               | `3000`         | no       | HTTP listen port                                     |
+| `LMDIS_RATE_LIMIT`   | *(disabled)*   | no       | Max requests/IP/minute. `> 0` enables; `0`/unset = off. |
+| `LMDIS_ACCESS_LOG`   | `0`            | no       | `1` = per-request `METHOD path status <ms>` to stdout |
+| `LMDB_PATH`          | `data/lmdb`    | no       | LMDB data path (relative to working directory)       |
 
-Generate a token:
+Never commit `LMDIS_REST_TOKEN`. Store via secret manager / `EnvironmentFile` / `--env-file`, not baked into images.
 
-```bash
-openssl rand -hex 32
-```
+## Authentication (deployment-relevant)
 
-Store it in `.env` or your platform's secret manager — never commit it to git.
+- Header: `Authorization: Bearer <token>`.
+- Protected: `POST /`, `GET /uptime`. Public: `GET /health`, `GET /docs`, `GET /openapi.json`, `GET /`.
+- Load-balancer / container health checks use `GET /health` — no token.
+- Comparison is constant-time (`timingSafeEqual`). Rotation = change env var + restart (no session store to revoke).
 
-Example `.env`:
-
-```bash
-PORT=3000
-LMDIS_REST_TOKEN=your-64-char-hex-token-here
-```
-
-Bun auto-loads `.env` files — no dotenv dependency needed.
-
-## Environment
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | HTTP listen port |
-| `LMDIS_REST_TOKEN` | *(required)* | Bearer token for all routes except `/health` |
-| `LMDIS_RATE_LIMIT` | *(disabled)* | Max requests per client IP per minute (`0` = off) |
-| `LMDIS_ACCESS_LOG` | `0` | Set to `1` for one-line access logs to stdout |
-
-## Graceful shutdown
-
-lmdis handles `SIGTERM` and `SIGINT` by stopping the HTTP server and calling `store.close()` before exit. Docker and systemd send `SIGTERM` on stop — no extra configuration needed.
-
-## Production run
+## Production run (from source)
 
 ```bash
 bun install --production
-
-# Set token once (persist in .env or export in your shell profile)
 export LMDIS_REST_TOKEN=$(openssl rand -hex 32)
 echo "LMDIS_REST_TOKEN=$LMDIS_REST_TOKEN" >> .env
-
 bun run src/index.ts
 ```
-
-No build step required — Bun runs TypeScript directly.
 
 Verify:
 
 ```bash
-curl http://localhost:3000/health                              # no auth
-curl -H "Authorization: Bearer $LMDIS_REST_TOKEN" \
-  -X POST localhost:3000 -H "Content-Type: application/json" \
-  -d '["SET", "ping", "pong"]'
+curl http://localhost:3000/health                                            # no auth
+curl -H "Authorization: Bearer $LMDIS_REST_TOKEN" -X POST localhost:3000 \
+  -H "Content-Type: application/json" -d '["SET","ping","pong"]'
 ```
 
-## Standalone binary
+## Standalone binary (compiled)
 
-Compile a single self-contained binary with no runtime dependency:
+Single self-contained executable embedding Bun + all deps. No runtime install needed.
 
 ```bash
 bun build --compile src/index.ts --outfile lmdis
-
 export LMDIS_REST_TOKEN=$(openssl rand -hex 32)
 ./lmdis
 ```
 
-The binary embeds Bun and all dependencies. `PORT` and `LMDIS_REST_TOKEN` env vars still work.
+`PORT` / `LMDIS_REST_TOKEN` / all env vars still apply.
 
 ## Data persistence
 
-LMDB data is stored at `data/lmdb` relative to the working directory. This directory must:
+LMDB data lives at `$LMDB_PATH` (default `data/lmdb`, relative to working directory).
 
-- Exist or be writable (LMDB creates it on first run)
-- Live on a **persistent volume** — not tmpfs or ephemeral storage
-- Have sufficient disk for your dataset (LMDB uses memory-mapped files)
+Requirements:
+- Directory must exist or be creatable (LMDB creates it on first run).
+- Must be on a **persistent volume** — not tmpfs / ephemeral container storage.
+- Must have headroom for the dataset (LMDB memory-maps its file).
 
-To use a custom path, set the `LMDB_PATH` env var or pass it when constructing the store (requires code change).
+Override path: set `LMDB_PATH` env var, or pass a path to `createStore(path)` in code.
+
+## Graceful shutdown
+
+`SIGTERM` and `SIGINT` → stop HTTP server + `store.close()` + `exit(0)`. Docker `stop` and systemd send `SIGTERM` — no extra config needed.
 
 ## Systemd
-
-Use `EnvironmentFile` to keep the token out of the unit file:
 
 ```ini
 [Unit]
@@ -113,25 +93,21 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-Create `/opt/lmdis/.env` owned by the `lmdis` user:
+`/opt/lmdis/.env` (owned by `lmdis` user, mode restrictive):
 
 ```bash
 PORT=3000
-LMDIS_REST_TOKEN=<output of openssl rand -hex 32>
+LMDIS_REST_TOKEN=<openssl rand -hex 32>
 ```
 
 ```bash
-sudo systemctl enable lmdis
-sudo systemctl start lmdis
-```
-
-Health check (no auth header):
-
-```bash
+sudo systemctl enable --now lmdis
 curl http://localhost:3000/health
 ```
 
 ## Docker
+
+Dockerfile:
 
 ```dockerfile
 FROM oven/bun:1
@@ -145,7 +121,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 CMD ["bun", "run", "src/index.ts"]
 ```
 
-Run with the token passed as a secret (not baked into the image):
+Run — token passed at runtime (not baked in), data on a named volume:
 
 ```bash
 docker build -t lmdis .
@@ -155,34 +131,18 @@ docker run -d -p 3000:3000 \
   lmdis
 ```
 
-Or use Docker secrets / `--env-file`:
+Or via `--env-file` / Docker secrets:
 
 ```bash
 echo "LMDIS_REST_TOKEN=$(openssl rand -hex 32)" > lmdis.env
 docker run -d -p 3000:3000 --env-file lmdis.env -v lmdis-data:/app/data lmdis
 ```
 
-The built-in `HEALTHCHECK` hits `/health` without a bearer token.
+Built-in `HEALTHCHECK` hits `GET /health` (no token).
 
-## Browser / frontend access
+## Reverse proxy (TLS termination)
 
-lmdis has no CORS headers and is not designed for direct browser access. Use a backend proxy:
-
-- **Do not expose** `LMDIS_REST_TOKEN` to client-side JavaScript.
-- **Bind lmdis privately** — localhost or an internal network — when co-located with your proxy.
-- **Do not publish** lmdis directly to the public internet for browser-driven apps. Route traffic through your application backend, which holds the bearer token server-side.
-
-See [README.md — Browser clients](./README.md#browser-clients) for a minimal proxy example.
-
-## Client SDK
-
-There is no npm package. Copy [`src/sdk.ts`](src/sdk.ts) into your backend (~130 lines, zero dependencies) or import it from a checked-out clone. See [README — SDK](./README.md#sdk).
-
-## Reverse proxy
-
-Terminate TLS in front of lmdis (nginx, Caddy, Cloudflare, etc.). Bearer tokens must travel over HTTPS in production.
-
-Example nginx location block — proxy all traffic; clients send the bearer header through:
+Terminate TLS in front of lmdis (nginx / Caddy / Cloudflare). Bearer tokens must travel over HTTPS in production. Clients send the bearer header through unchanged.
 
 ```nginx
 location / {
@@ -192,37 +152,57 @@ location / {
 }
 ```
 
-Configure your load balancer health check to `GET /health` on port 3000 — no auth required.
+- Bind lmdis privately (localhost / internal network) when co-located with the proxy.
+- Configure LB health check to `GET /health` on port 3000 (no auth).
+- Do **not** log `Authorization` headers in proxy/app logs.
+- For multi-instance or stricter policies, enforce rate limiting at the proxy; lmdis's limiter is single-instance in-memory.
 
-## Health check
+## Health checks
 
-`GET /health` returns `{"status":"ok"}` — use this for load balancer probes and container health checks. No bearer token required.
+- `GET /health` → `{"status":"ok"}` (no auth) — use for LB probes, container health, uptime monitors.
+- All other endpoints require `Authorization: Bearer $LMDIS_REST_TOKEN`.
 
 ```bash
 curl http://localhost:3000/health
 ```
 
-All other endpoints require:
+## Rate limiting (operational notes)
+
+`LMDIS_RATE_LIMIT=N` enables a per-IP fixed 60 s window (`N` requests/min/IP). IP resolution: first `X-Forwarded-For` entry → else `X-Real-IP` → else `"unknown"`. All routes count (including `/health`). Over-limit → `429 {"error":"rate limit exceeded","code":"RATE_LIMITED"}`. In-memory, single-instance only.
 
 ```bash
-Authorization: Bearer $LMDIS_REST_TOKEN
+LMDIS_RATE_LIMIT=600   # 600 requests/min per IP
 ```
 
-## Rate limiting
+## Browser / frontend access
 
-Set `LMDIS_RATE_LIMIT` to cap requests per client IP per minute (uses `X-Forwarded-For` or `X-Real-IP` when behind a proxy). Exceeded requests return `429` with `{"error":"rate limit exceeded","code":"RATE_LIMITED"}`.
+No CORS headers. Not designed for direct browser access — do **not** expose `LMDIS_REST_TOKEN` in client-side code (it grants full DB access). Route browser traffic through a same-origin backend endpoint that holds the token server-side:
 
-```bash
-LMDIS_RATE_LIMIT=600   # 600 requests/minute per IP
+```ts
+// your-backend/routes/kv.ts (same-origin to your frontend)
+if (req.method === "POST") {
+  const body = await req.json();
+  const res = await fetch(process.env.LMDIS_URL!, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.LMDIS_REST_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return Response.json(await res.json(), { status: res.status });
+}
 ```
 
-This is a basic in-memory limiter — sufficient for single-instance deployments. Use your reverse proxy's rate limiting for multi-instance or stricter policies.
+Server-to-server clients (`curl`, Bun/Node backends, workers) are unaffected — CORS is browser-enforced only.
 
-## Security
+## Security checklist
 
-- **Never commit** `LMDIS_REST_TOKEN` — `.env` is gitignored; use secret stores in CI/CD
-- **Separate tokens** per environment (dev, staging, prod)
-- **Rotation** — change the env var and restart; there is no session store to revoke
-- **HTTPS only** in production — bearer tokens in plain HTTP are trivially sniffable
-- **Do not log** `Authorization` headers in proxies or application logs
-- **Do not expose** the token in client-side code — call lmdis from backend services only
+- [ ] `LMDIS_REST_TOKEN` generated via `openssl rand -hex 32`; stored in secret manager / `EnvironmentFile` / `--env-file`, never committed.
+- [ ] Separate tokens per environment (dev / staging / prod).
+- [ ] HTTPS/TLS terminated at the reverse proxy in production (bearer tokens are sniffable over plain HTTP).
+- [ ] lmdis bound to a private interface (localhost / internal network), not exposed directly to the internet for browser-driven apps.
+- [ ] `Authorization` headers not logged by proxies or application logs.
+- [ ] Token never embedded in client-side/frontend code — backend proxy only.
+- [ ] LMDB data on a persistent volume.
+- [ ] Rotation runbook: change env var + restart (no session store to revoke).
