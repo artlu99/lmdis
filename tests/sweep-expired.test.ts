@@ -78,6 +78,38 @@ describe("sweepExpiredBatch", () => {
     expect(second.cursor).toBe("0");
   });
 
+  test("sweeps expired multibyte (CJK/emoji) keys", async () => {
+    // Regression: a `prefix + "\xff"` range bound truncated for user keys
+    // containing chars ≥ U+0100 (their UTF-8 bytes sort above ÿ-as-U+00FF).
+    const keys = ["中文", "clé", "\u{1F600}"];
+    for (const key of keys) {
+      await store.put(key, "v");
+      await store.put(eKey(key), String(Date.now() - 1000));
+    }
+
+    const result = await sweepExpiredBatch(store)("0", 1000);
+    expect(result.removed).toBe(3);
+    expect(result.cursor).toBe("0");
+    for (const key of keys) expect(store.get(key)).toBeUndefined();
+  });
+
+  test("multibyte keys enumerate and delete cleanly via commands", async () => {
+    await cmd("SET", "中文", "值");
+    await cmd("SADD", "中文", "成员");
+
+    const keys = ((await (await cmd("KEYS")).data).result) as string[];
+    expect(keys).toContain("中文");
+
+    const scanned = ((await (await cmd("SCANKEYS", "0", 100)).data).result) as [string, string[]];
+    expect(scanned[1]).toContain("中文");
+
+    const deleted = ((await (await cmd("DEL", "中文")).data).result) as number;
+    expect(deleted).toBe(1);
+
+    const keysAfter = ((await (await cmd("KEYS")).data).result) as string[];
+    expect(keysAfter).not.toContain("中文");
+  });
+
   test("non-positive limit falls back to default batch size", async () => {
     for (let i = 0; i < 3; i++) {
       const key = `dead-neg-${i}`;

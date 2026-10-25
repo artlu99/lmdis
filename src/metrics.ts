@@ -80,6 +80,12 @@ export const lmdisExpiredKeysRemovedTotal = new Counter({
   registers: [registry],
 });
 
+export const lmdisSweepErrorsTotal = new Counter({
+  name: "lmdis_sweep_errors_total",
+  help: "Total background TTL sweep batches that failed",
+  registers: [registry],
+});
+
 const KNOWN_ROUTES = new Set([
   "/",
   "/admin/sweep-expired",
@@ -132,6 +138,10 @@ export const recordRateLimitRejected = () => {
 
 export const recordExpiredKeyRemoved = (count = 1) => {
   lmdisExpiredKeysRemovedTotal.inc(count);
+};
+
+export const recordSweepError = () => {
+  lmdisSweepErrorsTotal.inc();
 };
 
 export const checkStoreReady = (store: Store) => (): boolean => {

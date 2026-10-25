@@ -1,10 +1,10 @@
-import { recordExpiredKeyRemoved } from "./metrics";
+import { recordExpiredKeyRemoved, recordSweepError } from "./metrics";
 import { SweepExpiredBody } from "./schemas";
-import { eKey, purgeExpiredPlainKey, type Store } from "./store";
+import { eKey, prefixRangeEnd, purgeExpiredPlainKey, type Store } from "./store";
 
 const E_PREFIX = "e\x00";
 const E_PREFIX_LEN = 2;
-const eRangeEnd = E_PREFIX + "\xff";
+const eRangeEnd = prefixRangeEnd(E_PREFIX);
 
 export const SWEEP_MAX_LIMIT = 1000;
 export const SWEEP_DEFAULT_LIMIT = 500;
@@ -76,6 +76,7 @@ export const startBackgroundSweeper = (store: Store): StopBackgroundSweeper => {
       const result = await sweep(cursor, batch);
       cursor = result.cursor;
     } catch (e) {
+      recordSweepError();
       console.error("background sweep failed:", e);
     } finally {
       inFlight = false;

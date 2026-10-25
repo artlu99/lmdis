@@ -74,21 +74,27 @@ export const cmdGet = (store: Store) => async (key: string) => {
   return Response.json({ result: store.get(key) ?? null });
 };
 
+// Prefix-block scans: single synchronous cursor pass (no awaits between
+// pulls — abandoning a live cursor mid-iteration from an async context can
+// wedge the LMDB reader), removes applied afterwards. A `prefix + "\xff"`
+// end bound would truncate for fields/members containing chars ≥ U+0100.
+const removePrefixed = async (store: Store, prefix: string): Promise<boolean> => {
+  const keys: string[] = [];
+  for (const { key } of store.getRange({ start: prefix })) {
+    if (!String(key).startsWith(prefix)) break;
+    keys.push(String(key));
+  }
+  for (const k of keys) await store.remove(k);
+  return keys.length > 0;
+};
+
 export const cmdDel = (store: Store) => async (key: string) => {
   let removed = 0;
   await store.transaction(async () => {
     if (await removeIfExists(store)(key)) removed = 1;
     if (await removeIfExists(store)(eKey(key))) removed = 1;
-    const hPre = hPrefix(key);
-    for (const { key: k } of store.getRange({ start: hPre, end: hPre + "\xff" })) {
-      await store.remove(k);
-      removed = 1;
-    }
-    const mPre = mPrefix(key);
-    for (const { key: k } of store.getRange({ start: mPre, end: mPre + "\xff" })) {
-      await store.remove(k);
-      removed = 1;
-    }
+    if (await removePrefixed(store, hPrefix(key))) removed = 1;
+    if (await removePrefixed(store, mPrefix(key))) removed = 1;
     if (await removeIfExists(store)(iKey(key))) removed = 1;
   });
   return Response.json({ result: removed });

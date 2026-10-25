@@ -20,9 +20,20 @@ export const iPrefix = () => `i\x00`;
 export const countLogicalKeys = (store: Store) => (): number => {
   let count = 0;
   const prefix = iPrefix();
-  for (const _ of store.getRange({ start: prefix, end: prefix + "\xff" })) count++;
+  for (const _ of store.getRange({ start: prefix, end: prefixRangeEnd(prefix) })) count++;
   return count;
 };
+
+/**
+ * Exclusive upper bound for a range over `prefix`-prefixed internal keys.
+ *
+ * The prefix successor (`"e\x00"` → `"e\x01"`) sorts strictly after every
+ * `prefix`-prefixed key, because ordered-binary encodes `\x00` as `04 00`:
+ * all `"X\x00…"` keys start with bytes `58 04 00` and the bound is `58 04 01`.
+ * Do NOT use `prefix + "\xff"` — user keys may contain chars ≥ U+0100
+ * (UTF-8 bytes above `\xff`-as-U+00FF), which fall outside that bound.
+ */
+export const prefixRangeEnd = (prefix: string): string => prefix.slice(0, 1) + "\x01";
 
 const BACKFILL_MARKER = "__lmdis_index_backfill_v1__";
 const INTERNAL_PREFIXES = ["h\x00", "m\x00", "e\x00", "i\x00"] as const;
@@ -75,10 +86,14 @@ export const touchIndex = (store: Store) => async (userKey: string) => {
 export const keyHasData = (store: Store) => (userKey: string): boolean => {
   if (store.get(userKey) !== undefined) return true;
   if (store.get(eKey(userKey)) !== undefined) return true;
-  const hPre = hPrefix(userKey);
-  for (const _ of store.getRange({ start: hPre, end: hPre + "\xff", limit: 1 })) return true;
-  const mPre = mPrefix(userKey);
-  for (const _ of store.getRange({ start: mPre, end: mPre + "\xff", limit: 1 })) return true;
+  // Single materialized entry (limit: 1) + startsWith check: a `prefix + "\xff"`
+  // end bound would truncate for fields/members containing chars ≥ U+0100,
+  // and an unbounded live cursor abandoned via break can wedge the reader.
+  for (const prefix of [hPrefix(userKey), mPrefix(userKey)]) {
+    for (const { key } of store.getRange({ start: prefix, limit: 1 })) {
+      if (String(key).startsWith(prefix)) return true;
+    }
+  }
   return false;
 };
 

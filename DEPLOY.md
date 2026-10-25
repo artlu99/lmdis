@@ -117,11 +117,26 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --production
 COPY src/ ./src/
+# Run as an unprivileged system user: LMDB writes through native C bindings,
+# so the KV process should never run as root. Port 3000 is unprivileged and
+# /app/data is the only writable path needed.
+RUN groupadd --system lmdis \
+  && useradd --system --no-create-home --gid lmdis lmdis \
+  && mkdir -p /app/data \
+  && chown lmdis:lmdis /app /app/data
+USER lmdis
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
+  CMD bun -e "const r = await fetch('http://localhost:3000/health'); process.exit(r.ok ? 0 : 1)" || exit 1
 CMD ["bun", "run", "src/index.ts"]
 ```
+
+The container runs as the unprivileged `lmdis` user (no root). The monitoring
+compose stack additionally sets `no-new-privileges` and drops all Linux
+capabilities. Named volumes pick up `/app/data` ownership from the image
+automatically; if you mount a **host directory** instead, `chown` it to the
+container's uid on the host first, or startup will fail with an LMDB
+permission error.
 
 Run — token passed at runtime (not baked in), data on a named volume:
 
@@ -217,6 +232,7 @@ Key metrics:
 | `lmdis_ready` | gauge | 1 when LMDB is ready |
 | `lmdis_keys_total` | gauge | Logical key count (cached, 30s) |
 | `lmdis_expired_keys_removed_total` | counter | Expired string keys removed (lazy + sweep) |
+| `lmdis_sweep_errors_total` | counter | Background sweep batches that failed |
 | `lmdis_lmdb_disk_bytes` | gauge | LMDB data directory size |
 | `process_resident_memory_bytes` | gauge | Process RSS |
 

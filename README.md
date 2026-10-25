@@ -217,6 +217,7 @@ All error bodies share the shape `{"error":string,"code":string}`. All success b
 - No transactions / batch / pipelining at the protocol level (one command per request).
 - No CORS headers. Server-to-server only; browser clients must go through a same-origin backend proxy that holds the token.
 - `GET /uptime` resets on `bun run dev` (`--watch`) hot-reload (dev-only; production keeps accurate uptime until restart).
+- Keys ≥ ~61 characters: `ordered-binary` switches to a raw UTF-8 encoding for strings ≥ 64 bytes, so internal index/expiry entries for long keys sort in a different byte region than short ones and can be missed by `KEYS`/`SCANKEYS`/`DEL`/sweep range scans. Short and multibyte keys are unaffected. Known limitation — tracked for a storage-format migration.
 
 ## Environment variables
 
@@ -245,6 +246,7 @@ When `LMDIS_RATE_LIMIT > 0`: per-IP fixed window of 60 s. Client IP = first entr
 | Metric | Type | Meaning |
 | ------ | ---- | ------- |
 | `lmdis_expired_keys_removed_total` | counter | Expired string keys removed (lazy expiry + TTL sweep) |
+| `lmdis_sweep_errors_total` | counter | Background sweep batches that failed |
 | `lmdis_keys_total` | gauge | Logical keys in the store index (cached 30 s) |
 | `lmdis_lmdb_disk_bytes` | gauge | On-disk size of the LMDB data directory |
 | `lmdis_commands_total` / `lmdis_command_errors_total` | counters | KV commands executed / errors, by type |

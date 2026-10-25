@@ -10,6 +10,10 @@ services:
       LMDB_PATH: /app/data/lmdb
     volumes:
       - lmdis-data:/app/data
+    security_opt:
+      - no-new-privileges
+    cap_drop:
+      - ALL
     restart: unless-stopped
 
   prometheus:

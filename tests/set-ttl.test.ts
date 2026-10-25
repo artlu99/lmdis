@@ -67,10 +67,13 @@ describe("SET TTL via REST", () => {
   });
 
   test("PXAT expires at unix timestamp in milliseconds", async () => {
-    const at = Date.now() + 50;
+    // Generous margins: the first GET must land inside the validity window,
+    // which is impossible to guarantee with tight (tens-of-ms) deadlines
+    // under load — see the EXAT test for the same pattern.
+    const at = Date.now() + 400;
     await cmd("SET", "pxat-key", "x", "PXAT", at);
     expect((await (await cmd("GET", "pxat-key")).data).result).toBe("x");
-    await Bun.sleep(80);
+    await Bun.sleep(600);
     expect((await (await cmd("GET", "pxat-key")).data).result).toBeNull();
   });
 
