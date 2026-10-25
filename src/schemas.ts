@@ -65,6 +65,27 @@ export const KeysRes = z.object({ result: z.array(userKey) });
 export const ScanKeysRes = z.object({
   result: z.tuple([z.string(), z.array(userKey)]),
 });
+
+const sweepLimit = z
+  .union([z.number(), z.string()])
+  .transform((v) => (typeof v === "number" ? v : Number(v)))
+  .pipe(z.number().int().positive().max(1000));
+
+export const SweepExpiredBody = z
+  .object({
+    cursor: z.string().optional(),
+    limit: sweepLimit.optional(),
+  })
+  .default({})
+  .transform((body) => ({
+    cursor: body.cursor ?? "0",
+    limit: body.limit ?? 500,
+  }));
+
+export const SweepExpiredRes = z.object({
+  cursor: z.string(),
+  removed: z.number().int().nonnegative(),
+});
 const UnauthorizedRes = z.object({
   error: z.string(),
   code: z.literal("UNAUTHORIZED"),
@@ -89,7 +110,7 @@ const bearerSecurity = [{ bearerAuth: [] }];
 
 export const spec = createDocument({
   openapi: "3.1.0",
-  info: { title: "lmdis", version: "1.0.0" },
+  info: { title: "lmdis", version: "1.1.0" },
   components: {
     securitySchemes: {
       bearerAuth: {
@@ -129,11 +150,54 @@ export const spec = createDocument({
         responses: oasResponse(z.object({ status: z.literal("ok") })),
       },
     },
+    "/ready": {
+      get: {
+        summary: "Readiness check",
+        responses: {
+          "200": {
+            description: "Store is ready",
+            content: { "application/json": { schema: z.object({ status: z.literal("ready") }) } },
+          },
+          "503": {
+            description: "Store is not ready",
+            content: {
+              "application/json": { schema: z.object({ status: z.literal("not ready") }) },
+            },
+          },
+        },
+      },
+    },
+    "/metrics": {
+      get: {
+        security: bearerSecurity,
+        summary: "Prometheus metrics",
+        responses: {
+          "200": {
+            description: "Prometheus text exposition format",
+            content: { "text/plain": { schema: z.string() } },
+          },
+          "401": {
+            description: "Unauthorized",
+            content: { "application/json": { schema: UnauthorizedRes } },
+          },
+        },
+      },
+    },
     "/uptime": {
       get: {
         security: bearerSecurity,
         summary: "Server uptime",
         responses: protectedResponses(z.object({ uptimeSeconds: z.number() })),
+      },
+    },
+    "/admin/sweep-expired": {
+      post: {
+        security: bearerSecurity,
+        summary: "Sweep expired TTL string keys (bounded batch)",
+        requestBody: {
+          content: { "application/json": { schema: SweepExpiredBody } },
+        },
+        responses: protectedResponses(SweepExpiredRes),
       },
     },
   },

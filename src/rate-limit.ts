@@ -1,6 +1,7 @@
 export type RateLimitConfig = {
   maxRequests: number;
   windowMs: number;
+  onRejected?: () => void;
 };
 
 export const createRateLimiter = (config: RateLimitConfig) => {
@@ -19,6 +20,7 @@ export const createRateLimiter = (config: RateLimitConfig) => {
     }
     bucket.count++;
     if (bucket.count > config.maxRequests) {
+      config.onRejected?.();
       return Response.json(
         { error: "rate limit exceeded", code: "RATE_LIMITED" },
         { status: 429 },

@@ -1,0 +1,46 @@
+groups:
+  - name: lmdis
+    rules:
+      - alert: LmdisDown
+        expr: up{job="lmdis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: lmdis instance is down
+          description: Prometheus cannot scrape lmdis /metrics for more than 1 minute.
+
+      - alert: LmdisNotReady
+        expr: lmdis_ready == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: lmdis store is not ready
+          description: lmdis readiness gauge has been 0 for more than 2 minutes.
+
+      - alert: LmdisHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{route="/",status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{route="/"}[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: lmdis command error rate is high
+          description: More than 5% of command requests returned 5xx over the last 5 minutes.
+
+      - alert: LmdisHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket{route="/"}[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: lmdis p95 latency is high
+          description: p95 command latency exceeded 500ms for 5 minutes.

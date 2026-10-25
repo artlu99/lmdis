@@ -19,13 +19,15 @@ Bun auto-loads `.env`.
 | `LMDIS_RATE_LIMIT`   | *(disabled)*   | no       | Max requests/IP/minute. `> 0` enables; `0`/unset = off. |
 | `LMDIS_ACCESS_LOG`   | `0`            | no       | `1` = per-request `METHOD path status <ms>` to stdout |
 | `LMDB_PATH`          | `data/lmdb`    | no       | LMDB data path (relative to working directory)       |
+| `LMDIS_SWEEP_INTERVAL_MS` | `0` (off) | no | Background TTL sweep interval; `> 0` enables        |
+| `LMDIS_SWEEP_BATCH`  | `500`          | no       | Expiry records examined per background sweep batch   |
 
 Never commit `LMDIS_REST_TOKEN`. Store via secret manager / `EnvironmentFile` / `--env-file`, not baked into images.
 
 ## Authentication (deployment-relevant)
 
 - Header: `Authorization: Bearer <token>`.
-- Protected: `POST /`, `GET /uptime`. Public: `GET /health`, `GET /docs`, `GET /openapi.json`, `GET /`.
+- Protected: `POST /`, `POST /admin/sweep-expired`, `GET /uptime`, `GET /metrics`. Public: `GET /health`, `GET /ready`, `GET /docs`, `GET /openapi.json`, `GET /`.
 - Load-balancer / container health checks use `GET /health` — no token.
 - Comparison is constant-time (`timingSafeEqual`). Rotation = change env var + restart (no session store to revoke).
 
@@ -159,16 +161,87 @@ location / {
 
 ## Health checks
 
-- `GET /health` → `{"status":"ok"}` (no auth) — use for LB probes, container health, uptime monitors.
-- All other endpoints require `Authorization: Bearer $LMDIS_REST_TOKEN`.
+- `GET /health` → `{"status":"ok"}` (no auth) — **liveness**: process is up. Does not verify LMDB.
+- `GET /ready` → `{"status":"ready"}` or `503 {"status":"not ready"}` (no auth) — **readiness**: LMDB is reachable.
+- Use `/health` for container/LB liveness probes; use `/ready` when traffic should wait for the store.
 
 ```bash
 curl http://localhost:3000/health
+curl http://localhost:3000/ready
 ```
+
+Protected endpoints require `Authorization: Bearer $LMDIS_REST_TOKEN`.
+
+### TTL sweep (optional)
+
+For workloads with many short-lived string keys that are never read again, enable proactive expiry:
+
+```bash
+# one-shot batch (repeat until cursor is "0")
+curl -X POST http://localhost:3000/admin/sweep-expired \
+  -H "Authorization: Bearer $LMDIS_REST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"cursor":"0","limit":1000}'
+
+# or enable background sweeper
+export LMDIS_SWEEP_INTERVAL_MS=30000
+export LMDIS_SWEEP_BATCH=500
+```
+
+`POST /admin/sweep-expired` is auth-protected and excluded from rate limiting. Monitor `lmdis_expired_keys_removed_total` and `lmdis_lmdb_disk_bytes`.
+
+## Monitoring (Prometheus / Grafana)
+
+lmdis exposes Prometheus metrics at `GET /metrics` (Bearer-protected, excluded from rate limiting).
+
+### Scrape target
+
+```yaml
+scrape_configs:
+  - job_name: lmdis
+    static_configs:
+      - targets: ["localhost:3000"]
+    metrics_path: /metrics
+    bearer_token_file: /path/to/lmdis-token   # file containing LMDIS_REST_TOKEN
+```
+
+Key metrics:
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `http_requests_total` | counter | HTTP requests by method, route, status |
+| `http_request_duration_seconds` | histogram | Request latency by method, route |
+| `lmdis_commands_total` | counter | KV commands by type and status |
+| `lmdis_command_errors_total` | counter | Command errors by type and code |
+| `lmdis_rate_limit_rejected_total` | counter | Rate-limited requests |
+| `lmdis_ready` | gauge | 1 when LMDB is ready |
+| `lmdis_keys_total` | gauge | Logical key count (cached, 30s) |
+| `lmdis_expired_keys_removed_total` | counter | Expired string keys removed (lazy + sweep) |
+| `lmdis_lmdb_disk_bytes` | gauge | LMDB data directory size |
+| `process_resident_memory_bytes` | gauge | Process RSS |
+
+`/metrics` requires the bearer token, so it is safe to expose behind a proxy; binding it to an internal network in production is still recommended — it exposes operational data (request rates, key counts, memory). The compose stack passes the token to Prometheus automatically (`bearer_token_file` written from `LMDIS_REST_TOKEN` at startup).
+
+### Reference stack
+
+A docker-compose stack with lmdis, Prometheus, and Grafana lives in [`deploy/`](./deploy/):
+
+```bash
+export LMDIS_REST_TOKEN=$(openssl rand -hex 32)
+docker compose -f deploy/docker-compose.monitoring.yml up --build
+```
+
+| Service | URL |
+| ------- | --- |
+| lmdis | http://localhost:3000 |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3001 (admin / `GRAFANA_ADMIN_PASSWORD` or default `admin`) |
+
+Prometheus alert rules: [`deploy/prometheus/alerts.yml`](./deploy/prometheus/alerts.yml). Pre-built dashboard: [`deploy/grafana/dashboards/lmdis.json`](./deploy/grafana/dashboards/lmdis.json).
 
 ## Rate limiting (operational notes)
 
-`LMDIS_RATE_LIMIT=N` enables a per-IP fixed 60 s window (`N` requests/min/IP). IP resolution: first `X-Forwarded-For` entry → else `X-Real-IP` → else `"unknown"`. All routes count (including `/health`). Over-limit → `429 {"error":"rate limit exceeded","code":"RATE_LIMITED"}`. In-memory, single-instance only.
+`LMDIS_RATE_LIMIT=N` enables a per-IP fixed 60 s window (`N` requests/min/IP). IP resolution: first `X-Forwarded-For` entry → else `X-Real-IP` → else `"unknown"`. Most routes count toward the limit; `/metrics`, `/ready`, and `/admin/sweep-expired` are excluded so Prometheus scrapes and admin sweeps are not throttled. Over-limit → `429 {"error":"rate limit exceeded","code":"RATE_LIMITED"}`. In-memory, single-instance only.
 
 ```bash
 LMDIS_RATE_LIMIT=600   # 600 requests/min per IP

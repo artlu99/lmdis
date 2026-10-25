@@ -1,3 +1,4 @@
+import { recordCommand, recordExpiredKeyRemoved } from "./metrics";
 import { CommandReq } from "./schemas";
 import { cmdKeys, cmdScanKeys } from "./keys";
 import {
@@ -37,9 +38,23 @@ const parseSetTtl = (args: unknown[]): SetTtl | undefined => {
   return undefined;
 };
 
+const trackCommand = async (command: string, res: Response) => {
+  if (res.status >= 400) {
+    try {
+      const body = (await res.clone().json()) as { code?: string };
+      recordCommand(command, res.status, body.code ?? "UNKNOWN");
+    } catch {
+      recordCommand(command, res.status, "UNKNOWN");
+    }
+  } else {
+    recordCommand(command, res.status);
+  }
+  return res;
+};
+
 export const cmdSet =
   (store: Store) => async (key: string, value: string, ttl?: SetTtl) => {
-    await expirePlainKeyIfNeeded(store)(key);
+    if (await expirePlainKeyIfNeeded(store)(key)) recordExpiredKeyRemoved();
     await store.transaction(async () => {
       await store.put(key, value);
       await touchIndex(store)(key);
@@ -55,7 +70,7 @@ export const cmdSet =
   };
 
 export const cmdGet = (store: Store) => async (key: string) => {
-  await expirePlainKeyIfNeeded(store)(key);
+  if (await expirePlainKeyIfNeeded(store)(key)) recordExpiredKeyRemoved();
   return Response.json({ result: store.get(key) ?? null });
 };
 
@@ -131,44 +146,57 @@ export const cmdSdel = (store: Store) => async (key: string, member: string) => 
 export const handleCommand = (store: Store) => async (req: Request): Promise<Response> => {
   const contentLength = req.headers.get("content-length");
   if (contentLength && Number(contentLength) > 1_000_000) {
-    return Response.json({ error: "request body too large (max 1MB)", code: "VALIDATION_ERROR" }, { status: 413 });
+    return trackCommand(
+      "unknown",
+      Response.json({ error: "request body too large (max 1MB)", code: "VALIDATION_ERROR" }, { status: 413 }),
+    );
   }
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return Response.json({ error: "invalid JSON", code: "VALIDATION_ERROR" }, { status: 400 });
+    return trackCommand(
+      "unknown",
+      Response.json({ error: "invalid JSON", code: "VALIDATION_ERROR" }, { status: 400 }),
+    );
   }
   const parsed = CommandReq.safeParse(body);
   if (!parsed.success) {
-    return Response.json({ error: parsed.error.message, code: "VALIDATION_ERROR" }, { status: 400 });
+    return trackCommand(
+      "unknown",
+      Response.json({ error: parsed.error.message, code: "VALIDATION_ERROR" }, { status: 400 }),
+    );
   }
   const data = parsed.data;
+  const command = data[0];
   try {
-    switch (data[0]) {
+    switch (command) {
       case "SET":
-        return await cmdSet(store)(data[1], data[2], parseSetTtl(data as unknown[]));
+        return trackCommand(command, await cmdSet(store)(data[1], data[2], parseSetTtl(data as unknown[])));
       case "GET":
-        return await cmdGet(store)(data[1]);
+        return trackCommand(command, await cmdGet(store)(data[1]));
       case "DEL":
-        return await cmdDel(store)(data[1]);
+        return trackCommand(command, await cmdDel(store)(data[1]));
       case "HINCR":
-        return await cmdHincr(store)(data[1], data[2], data[3]);
+        return trackCommand(command, await cmdHincr(store)(data[1], data[2], data[3]));
       case "SADD":
-        return await cmdSadd(store)(data[1], data[2]);
+        return trackCommand(command, await cmdSadd(store)(data[1], data[2]));
       case "SMEMB":
-        return cmdSmemb(store)(data[1]);
+        return trackCommand(command, cmdSmemb(store)(data[1]));
       case "SDEL":
-        return await cmdSdel(store)(data[1], data[2]);
+        return trackCommand(command, await cmdSdel(store)(data[1], data[2]));
       case "KEYS":
-        return cmdKeys(store)(data.length === 2 ? data[1] : undefined);
+        return trackCommand(command, cmdKeys(store)(data.length === 2 ? data[1] : undefined));
       case "SCANKEYS": {
         const pattern = data.length === 5 && data[3] === "MATCH" ? data[4] : undefined;
-        return cmdScanKeys(store)(data[1], data[2], pattern);
+        return trackCommand(command, cmdScanKeys(store)(data[1], data[2], pattern));
       }
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return Response.json({ error: message, code: "INTERNAL_ERROR" }, { status: 500 });
+    return trackCommand(
+      command,
+      Response.json({ error: message, code: "INTERNAL_ERROR" }, { status: 500 }),
+    );
   }
 };

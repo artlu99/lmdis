@@ -92,9 +92,18 @@ describe("OpenAPI spec", () => {
     }
   });
   test("includes /health", () => expect(hasPath("/health")).toBe(true));
+  test("includes /ready", () => expect(hasPath("/ready")).toBe(true));
+  test("includes /metrics", () => expect(hasPath("/metrics")).toBe(true));
   test("includes /uptime", () => expect(hasPath("/uptime")).toBe(true));
   test("includes POST /", () => {
     const root = (spec.paths as Record<string, unknown>)["/"] as Record<string, unknown>;
     expect(root.post).toBeDefined();
+  });
+  test("includes POST /admin/sweep-expired", () => {
+    const path = (spec.paths as Record<string, unknown>)["/admin/sweep-expired"] as Record<
+      string,
+      unknown
+    >;
+    expect(path.post).toBeDefined();
   });
 });

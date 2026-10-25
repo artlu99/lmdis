@@ -88,7 +88,10 @@ bun examples/client.ts
 | POST   | `/`             | bearer | Command result (see Commands)                    |
 | GET    | `/`             | none   | `302` redirect → `/docs`                         |
 | GET    | `/health`       | none   | `{"status":"ok"}`                                |
+| GET    | `/ready`        | none   | `{"status":"ready"}` or `503 {"status":"not ready"}` |
+| GET    | `/metrics`      | bearer | Prometheus text exposition format (see Monitoring) |
 | GET    | `/uptime`       | bearer | `{"uptimeSeconds":<int>}`                        |
+| POST   | `/admin/sweep-expired` | bearer | `{"cursor":"<next>","removed":<int>}` (see Admin: TTL sweep) |
 | GET    | `/openapi.json` | none   | OpenAPI 3.1 document                             |
 | GET    | `/docs`         | none   | HTML (Scalar API reference from `/openapi.json`) |
 
@@ -100,8 +103,8 @@ bun examples/client.ts
 | ---------------- | ------------------------------------------------------------------- |
 | Header           | `Authorization: Bearer <token>`                                     |
 | Required env     | `LMDIS_REST_TOKEN` (server exits if unset)                          |
-| Protected routes | `POST /`, `GET /uptime`                                             |
-| Public routes    | `GET /health`, `GET /docs`, `GET /openapi.json`, `GET /`            |
+| Protected routes | `POST /`, `GET /uptime`, `POST /admin/sweep-expired`, `GET /metrics` |
+| Public routes    | `GET /health`, `GET /ready`, `GET /docs`, `GET /openapi.json`, `GET /` |
 | Comparison       | `timingSafeEqual` (constant-time)                                   |
 | Missing token    | `401 {"error":"Missing authorization token","code":"UNAUTHORIZED"}` |
 | Invalid token    | `401 {"error":"Invalid authorization token","code":"UNAUTHORIZED"}` |
@@ -137,8 +140,24 @@ All commands are `POST /` with `Content-Type: application/json` body = a JSON ar
 
 - Plain `SET` (no TTL option) **clears** any existing expiry on the key.
 - TTL values must be positive integers (number or numeric string).
-- Expired keys: `GET` returns `null` (lazy expiry on access).
+- Expired keys: `GET` returns `null` (lazy expiry on access). Keys with TTL that are never read again remain on disk until swept — see **Admin: TTL sweep** below.
 - `DEL` removes the string value, its TTL entry, **all** hash fields, **all** set members, and the key index entry. Returns `1` if anything existed, else `0`.
+
+### Admin: TTL sweep
+
+Proactive expiry for string keys with TTL metadata. Not part of the Redis-like command API.
+
+```http
+POST /admin/sweep-expired
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"cursor": "0", "limit": 500}
+```
+
+Response: `{"cursor":"<nextCursor>","removed":42}`. `cursor === "0"` means the pass is complete. `limit` defaults to `500`, max `1000`. Requires auth; excluded from rate limiting.
+
+For TTL-heavy workloads (many write-once keys), run in a loop or set `LMDIS_SWEEP_INTERVAL_MS` (see environment variables). Does not shrink the LMDB file on disk — only removes logically dead keys.
 
 ### Hashes
 
@@ -211,11 +230,29 @@ Bun auto-loads `.env`.
 | `LMDIS_RATE_LIMIT` | *(disabled)* | Max requests/IP/minute. `0` or unset = off. Must be `> 0` to enable. |
 | `LMDIS_ACCESS_LOG` | `0`          | `1` = log `METHOD path status <ms>` per request to stdout            |
 | `LMDB_PATH`        | `data/lmdb`  | LMDB data file path (relative to working directory)                  |
+| `LMDIS_SWEEP_INTERVAL_MS` | `0` (off) | Background TTL sweep interval in ms; `> 0` enables              |
+| `LMDIS_SWEEP_BATCH` | `500`       | Expiry records examined per background sweep batch                   |
 
 
 ### Rate limiting
 
-When `LMDIS_RATE_LIMIT > 0`: per-IP fixed window of 60 s. Client IP = first entry of `X-Forwarded-For`, else `X-Real-IP`, else literal `"unknown"`. All routes count (including `GET /health`). Over-limit requests return `429` `{"error":"rate limit exceeded","code":"RATE_LIMITED"}`. In-memory, single-instance only — use a reverse proxy for multi-instance / stricter limits.
+When `LMDIS_RATE_LIMIT > 0`: per-IP fixed window of 60 s. Client IP = first entry of `X-Forwarded-For`, else `X-Real-IP`, else literal `"unknown"`. All routes count except `GET /metrics`, `GET /ready`, and `POST /admin/sweep-expired` (kept throttle-free so Prometheus scrapes and admin sweeps are never limited). Over-limit requests return `429` `{"error":"rate limit exceeded","code":"RATE_LIMITED"}`. In-memory, single-instance only — use a reverse proxy for multi-instance / stricter limits.
+
+## Monitoring
+
+`GET /metrics` exposes Prometheus metrics (Bearer-protected, excluded from rate limiting; values refresh on scrape). Prometheus authenticates via `bearer_token_file` — see [DEPLOY.md](DEPLOY.md).
+
+| Metric | Type | Meaning |
+| ------ | ---- | ------- |
+| `lmdis_expired_keys_removed_total` | counter | Expired string keys removed (lazy expiry + TTL sweep) |
+| `lmdis_keys_total` | gauge | Logical keys in the store index (cached 30 s) |
+| `lmdis_lmdb_disk_bytes` | gauge | On-disk size of the LMDB data directory |
+| `lmdis_commands_total` / `lmdis_command_errors_total` | counters | KV commands executed / errors, by type |
+| `lmdis_rate_limit_rejected_total` | counter | Requests rejected by rate limiting |
+| `http_requests_total` / `http_request_duration_seconds` | counter / histogram | HTTP traffic and latency by route |
+| `process_resident_memory_bytes` / `lmdis_uptime_seconds` / `lmdis_ready` | gauges | Process RSS, uptime, readiness (1/0) |
+
+Eviction status: watch `rate(lmdis_expired_keys_removed_total[5m])`. A ready-made Prometheus + Grafana stack (scrape config, alert rules, provisioned dashboard) is in [`deploy/`](deploy) — see [DEPLOY.md](DEPLOY.md). `/metrics` requires the bearer token and exposes operational data — still keep it off the public internet where possible.
 
 ## Development
 

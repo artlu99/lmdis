@@ -17,6 +17,13 @@ export const eKey = (key: string) => `e\x00${key}`;
 export const iKey = (key: string) => `i\x00${key}`;
 export const iPrefix = () => `i\x00`;
 
+export const countLogicalKeys = (store: Store) => (): number => {
+  let count = 0;
+  const prefix = iPrefix();
+  for (const _ of store.getRange({ start: prefix, end: prefix + "\xff" })) count++;
+  return count;
+};
+
 const BACKFILL_MARKER = "__lmdis_index_backfill_v1__";
 const INTERNAL_PREFIXES = ["h\x00", "m\x00", "e\x00", "i\x00"] as const;
 
@@ -80,17 +87,29 @@ export const syncIndex = (store: Store) => async (userKey: string) => {
   else await removeIfExists(store)(iKey(userKey));
 };
 
-export const expirePlainKeyIfNeeded = (store: Store) => async (key: string) => {
+export const purgeExpiredPlainKey = (store: Store) => async (key: string): Promise<boolean> => {
   const expiryKey = eKey(key);
   const raw = store.get(expiryKey);
-  if (raw === undefined) return;
-  if (Date.now() < Number(raw)) return;
+  if (raw === undefined) return false;
+  if (Date.now() < Number(raw)) return false;
+
+  // Re-check expiry inside the transaction so a concurrent SET that renews
+  // the key between scan and purge cannot be deleted.
+  let removed = false;
   await store.transaction(async () => {
+    const current = store.get(expiryKey);
+    if (current === undefined) return;
+    if (Date.now() < Number(current)) return;
     await store.remove(key);
     await store.remove(expiryKey);
     await syncIndex(store)(key);
+    removed = true;
   });
+  return removed;
 };
+
+export const expirePlainKeyIfNeeded = (store: Store) => async (key: string): Promise<boolean> =>
+  purgeExpiredPlainKey(store)(key);
 
 export const backfillIndexIfNeeded = (store: Store) => async () => {
   if (store.get(BACKFILL_MARKER) !== undefined) return;
