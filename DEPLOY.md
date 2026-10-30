@@ -107,6 +107,20 @@ sudo systemctl enable --now lmdis
 curl http://localhost:3000/health
 ```
 
+## pm2
+
+pm2 >= 6 runs Bun apps through its fork container (`ProcessContainerForkBun.js`), which **imports** the app as a module rather than executing it. `import.meta.main` is then `false` and `src/index.ts`'s guarded startup block never runs — the process sits "online" with empty logs and no listener. Start `serve.ts`, which calls `main()` unconditionally:
+
+```bash
+pm2 start serve.ts --name lmdis --interpreter ~/.bun/bin/bun
+```
+
+pm2 captures the invoking shell's cwd as the app's cwd — always `pm2 start` from the repo root, so Bun finds `.env` and `data/lmdb` resolves. Verify with `pm2 describe lmdis | grep "exec cwd"`.
+
+- Fork mode only; do not use `-i` / cluster mode (Bun does not support it).
+- Persist across reboots: `pm2 save` then run the command printed by `pm2 startup`.
+- pm2 < 6 executes custom-interpreter scripts directly, so `src/index.ts` also works there — but prefer `serve.ts`, which works on both.
+
 ## Docker
 
 Dockerfile:

@@ -111,7 +111,7 @@ export const createRoutes = (
 
 export { createStore };
 
-if (import.meta.main) {
+export const main = async (): Promise<void> => {
   const token = process.env.LMDIS_REST_TOKEN;
   if (!token) {
     console.error("LMDIS_REST_TOKEN is required");
@@ -156,4 +156,9 @@ if (import.meta.main) {
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
   console.log(`Listening on :${port}`);
-}
+};
+
+// Direct execution (`bun src/index.ts`). Module loaders (tests, pm2's fork
+// container) import this file instead and never hit this branch — they should
+// call `main()` explicitly; see serve.ts.
+if (import.meta.main) void main();
